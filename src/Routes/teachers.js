@@ -6,12 +6,9 @@ import {
   updateTeacher,
   deleteTeacher
 } from "../Controller/teacher.js";
-import { authenticate, authorize } from "../Middleware/auth.js";
+import { authorize } from "../Middleware/auth.js";
 
 let teacherRouter = Router();
-
-// Apply authentication to all teacher routes
-teacherRouter.use(authenticate);
 
 /**
  * @swagger
@@ -87,7 +84,7 @@ teacherRouter.use(authenticate);
  */
 teacherRouter.route("/")
   .post(authorize('Admin'), createTeacher)
-  .get(authorize('Admin'), getAllTeachers);
+  .get(authorize('Admin', 'Teacher'), getAllTeachers);
 
 /**
  * @swagger
@@ -188,7 +185,7 @@ teacherRouter.route("/")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 teacherRouter.route("/:id")
-  .get(authorize('Admin'), getTeacherById)
+  .get(authorize('Admin', 'Teacher'), getTeacherById)
   .put(authorize('Admin'), updateTeacher)
   .delete(authorize('Admin'), deleteTeacher);
 
