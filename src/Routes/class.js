@@ -10,6 +10,7 @@ import {
   setTimetable,
   updateClassSubjectBook
 } from "../Controller/class.js";
+import { authorize } from "../Middleware/auth.js";
 
 let classRouter = Router();
 
@@ -81,8 +82,8 @@ let classRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 classRouter.route("/")
-  .post(createClass)
-  .get(getAllClasses);
+  .post(authorize('Admin'), createClass)
+  .get(authorize('Admin', 'Teacher'), getAllClasses);
 
 /**
  * @swagger
@@ -183,9 +184,9 @@ classRouter.route("/")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 classRouter.route("/:id")
-  .get(getClassById)
-  .put(updateClass)
-  .delete(deleteClass);
+  .get(authorize('Admin', 'Teacher'), getClassById)
+  .put(authorize('Admin'), updateClass)
+  .delete(authorize('Admin'), deleteClass);
 
 /**
  * @swagger
@@ -220,7 +221,7 @@ classRouter.route("/:id")
  *         $ref: '#/components/responses/Unauthorized'
  */
 classRouter.route("/:id/students")
-  .get(getClassStudents);
+  .get(authorize('Admin', 'Teacher'), getClassStudents);
 
 /**
  * @swagger
@@ -295,11 +296,11 @@ classRouter.route("/:id/students")
  *         $ref: '#/components/responses/NotFound'
  */
 classRouter.route("/:id/timetable")
-  .get(getTimetable)
-  .put(setTimetable);
+  .get(authorize('Admin', 'Teacher'), getTimetable)
+  .put(authorize('Admin'), setTimetable);
 
 // Update book details for a subject in a class
 classRouter.route("/:classId/subjects/:subjectId/book")
-  .put(updateClassSubjectBook);
+  .put(authorize('Admin'), updateClassSubjectBook);
 
 export default classRouter;
