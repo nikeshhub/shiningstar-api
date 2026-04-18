@@ -1,5 +1,5 @@
 import { isValidObjectId } from "mongoose";
-import { uploadBufferToCloudinary, deleteFromCloudinary } from "../config/cloudinary.js";
+import { uploadBufferToCloudinary } from "../config/cloudinary.js";
 import {
   Attendance,
   Class,
@@ -472,15 +472,6 @@ export let updateStudent = async (req, res) => {
       return respondAndCleanup(res, 404, "Student not found", uploadedUrls);
     }
 
-    // Delete replaced Cloudinary assets
-    const deletionPromises = [];
-    if (data.photo && previousPhoto && previousPhoto !== data.photo) {
-      deletionPromises.push(deleteCloudinaryFile(previousPhoto));
-    }
-    if (data.birthCertificate && previousBirthCertificate && previousBirthCertificate !== data.birthCertificate) {
-      deletionPromises.push(deleteCloudinaryFile(previousBirthCertificate));
-    }
-    await Promise.all(deletionPromises);
 
     res.status(200).json({
       success: true,
@@ -518,10 +509,6 @@ export let deleteStudent = async (req, res) => {
     }
 
     await student.deleteOne();
-    await Promise.all([
-      deleteCloudinaryFile(student.photo),
-      deleteCloudinaryFile(student.birthCertificate),
-    ]);
 
     res.status(200).json({
       success: true,
