@@ -1,10 +1,5 @@
 import mongoose from "mongoose";
-import dotenv from "dotenv";
-
-// Load environment variables
-dotenv.config();
-
-const dbUrl = process.env.MONGODB_URI || "mongodb://localhost:27017/shining_star";
+import { MONGODB_URI } from "./src/config/env.js";
 
 // Connect to MongoDB
 const connectToMongoDb = async () => {
@@ -15,16 +10,20 @@ const connectToMongoDb = async () => {
       socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
     };
 
-    await mongoose.connect(dbUrl, options);
+    await mongoose.connect(MONGODB_URI, options);
 
     console.log(`✓ Application connected to MongoDB successfully`);
     console.log(`  Database: ${mongoose.connection.name}`);
-    console.log(`  Host: ${mongoose.connection.host}:${mongoose.connection.port}`);
+    console.log(
+      `  Host: ${mongoose.connection.host}:${mongoose.connection.port}`,
+    );
   } catch (error) {
     console.error("✗ MongoDB Connection Error:");
     console.error(`  ${error.message}`);
     console.error("\nTroubleshooting steps:");
-    console.error("  1. Ensure MongoDB is running (brew services start mongodb-community)");
+    console.error(
+      "  1. Ensure MongoDB is running (brew services start mongodb-community)",
+    );
     console.error("  2. Check your MONGODB_URI in .env file");
     console.error("  3. Verify MongoDB is listening on the correct port");
     process.exit(1); // Exit process with failure
