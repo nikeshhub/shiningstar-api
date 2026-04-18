@@ -1,7 +1,6 @@
 import jwt from 'jsonwebtoken';
+import { JWT_SECRET } from '../config/auth.js';
 import { User } from '../Model/model.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'shining-star-secret-key-2081';
 
 // Verify JWT token
 export const authenticate = async (req, res, next) => {
@@ -39,10 +38,12 @@ export const authenticate = async (req, res, next) => {
     // Add user to request
     req.user = {
       id: user._id,
+      _id: user._id,
       phoneNumber: user.phoneNumber,
       email: user.email,
       role: user.role,
       permissions: user.permissions,
+      profile: user.profile,
       profileModel: user.profileModel
     };
 
@@ -130,10 +131,12 @@ export const optionalAuth = async (req, res, next) => {
       if (user && user.isActive) {
         req.user = {
           id: user._id,
+          _id: user._id,
           phoneNumber: user.phoneNumber,
           email: user.email,
           role: user.role,
           permissions: user.permissions,
+          profile: user.profile,
           profileModel: user.profileModel
         };
       }

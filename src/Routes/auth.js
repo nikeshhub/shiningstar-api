@@ -36,7 +36,7 @@ const authRouter = Router();
  *       400:
  *         $ref: '#/components/responses/ValidationError'
  *       409:
- *         description: User with this email or username already exists
+ *         description: User with this phone number or email already exists
  *         content:
  *           application/json:
  *             schema:
@@ -107,7 +107,7 @@ authRouter.post('/login', login);
  *           schema:
  *             type: object
  *             properties:
- *               username:
+ *               phoneNumber:
  *                 type: string
  *               email:
  *                 type: string
