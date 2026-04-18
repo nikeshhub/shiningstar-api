@@ -9,13 +9,10 @@ import {
   getEnrollmentHistory,
   updateGPSLocation
 } from "../Controller/students.js";
-import { authenticate, authorize } from "../Middleware/auth.js";
+import { authorize } from "../Middleware/auth.js";
 import { uploadStudentDocuments } from "../Middleware/upload.js";
 
 let studentRouter = Router();
-
-// Apply authentication to all student routes
-studentRouter.use(authenticate);
 
 /**
  * @swagger
@@ -56,7 +53,7 @@ studentRouter.use(authenticate);
  *   get:
  *     tags: [Students]
  *     summary: Get all students
- *     description: Supports filtering by class, status, and search (name, studentId, parentContact).
+ *     description: Supports filtering by class, status, and search by student name, student ID, or family contact details.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -75,7 +72,7 @@ studentRouter.use(authenticate);
  *         name: search
  *         schema:
  *           type: string
- *         description: Search by name, studentId or parentContact
+ *         description: Search by student name, studentId, or family contact details
  *     responses:
  *       200:
  *         description: Students fetched successfully
