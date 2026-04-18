@@ -10,7 +10,12 @@ import {
   updateGPSLocation
 } from "../Controller/students.js";
 import { authorize } from "../Middleware/auth.js";
-import { uploadStudentDocuments } from "../Middleware/upload.js";
+import { uploadFields } from "../Middleware/upload.js";
+
+const uploadStudentDocuments = uploadFields([
+  { name: 'photo', maxCount: 1 },
+  { name: 'birthCertificate', maxCount: 1 },
+]);
 
 let studentRouter = Router();
 
