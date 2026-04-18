@@ -10,6 +10,7 @@ import {
   unlinkStudentFromFamily,
   generateFamilyId
 } from "../Controller/family.js";
+import { authorize } from "../Middleware/auth.js";
 
 let familyRouter = Router();
 
@@ -29,8 +30,8 @@ familyRouter
 familyRouter.get("/:id/fee-summary", getFamilyFeeSummary);
 
 // Link/unlink students
-familyRouter.post("/link-student", linkStudentToFamily);
-familyRouter.delete("/unlink-student/:studentId", unlinkStudentFromFamily);
+familyRouter.post("/link-student", authorize('Admin'), linkStudentToFamily);
+familyRouter.delete("/unlink-student/:studentId", authorize('Admin'), unlinkStudentFromFamily);
 
 // Generate family ID
 familyRouter.get("/generate/id", generateFamilyId);
