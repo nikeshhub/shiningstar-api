@@ -18,6 +18,7 @@ import timetableRouter from "./src/Routes/timetable.js";
 import teacherAttendanceRouter from "./src/Routes/teacherAttendance.js";
 import progressReportRouter from "./src/Routes/progressReport.js";
 import { authenticate } from "./src/Middleware/auth.js";
+import { startNotificationScheduler } from "./src/services/notificationScheduler.js";
 
 const app = express();
 
@@ -76,6 +77,7 @@ app.use("/api/progress-reports", authenticate, progressReportRouter);
 
 const startServer = async () => {
   await connectToMongoDb();
+  startNotificationScheduler();
 
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
