@@ -83,7 +83,6 @@ async function setupFreshDatabase() {
         mobile: '9857654321',
       },
       address: 'Kathmandu, Nepal',
-      billingType: 'Family',
       status: 'Active',
     });
     console.log('✅ Family created (ID: FAM0001)\n');
@@ -151,7 +150,6 @@ async function setupFreshDatabase() {
         mobile: '9807654321',
       },
       address: 'Lalitpur, Nepal',
-      billingType: 'Individual',
       status: 'Active',
     });
 
