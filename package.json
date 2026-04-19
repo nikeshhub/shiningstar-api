@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "nodemon index.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "test": "node --test src/**/*.test.js"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +24,7 @@
     "mongodb": "^6.2.0",
     "mongoose": "^7.6.3",
     "multer": "^2.1.1",
+    "nepali-date-converter": "^3.4.0",
     "pdfkit": "^0.17.2",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1"
