@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { authorize } from "../Middleware/auth.js";
 import {
   createNotification,
   getAllNotifications,
@@ -11,6 +12,8 @@ import {
 } from "../Controller/notification.js";
 
 let notificationRouter = Router();
+
+notificationRouter.use(authorize("Admin"));
 
 /**
  * @swagger
@@ -41,16 +44,10 @@ let notificationRouter = Router();
  *   get:
  *     tags: [Notifications]
  *     summary: Get all notifications
- *     description: Supports filtering by notificationType, status, and targetAudience.
+ *     description: Supports filtering by status and targetAudience.
  *     security:
  *       - bearerAuth: []
  *     parameters:
- *       - in: query
- *         name: notificationType
- *         schema:
- *           type: string
- *           enum: [Fee Reminder, Result Published, Holiday, Event, Exam Schedule, General, Attendance Alert]
- *         description: Filter by notification type
  *       - in: query
  *         name: status
  *         schema:
