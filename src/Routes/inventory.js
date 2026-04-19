@@ -9,6 +9,7 @@ import {
   getStudentDistributions,
   getAllDistributions
 } from "../Controller/inventory.js";
+import { authorize } from "../Middleware/auth.js";
 
 let inventoryRouter = Router();
 
@@ -55,7 +56,7 @@ let inventoryRouter = Router();
  *         name: itemType
  *         schema:
  *           type: string
- *           enum: [Uniform, Books, Stationery, Tracksuit, Other]
+ *           enum: [Uniform, Books, Stationery]
  *         description: Filter by item type
  *       - in: query
  *         name: status
@@ -79,8 +80,8 @@ let inventoryRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 inventoryRouter.route("/")
-  .post(createInventoryItem)
-  .get(getAllInventoryItems);
+  .post(authorize('Admin'), createInventoryItem)
+  .get(authorize('Admin'), getAllInventoryItems);
 
 /**
  * @swagger
@@ -161,9 +162,9 @@ inventoryRouter.route("/")
  *         $ref: '#/components/responses/NotFound'
  */
 inventoryRouter.route("/:id")
-  .get(getInventoryItemById)
-  .put(updateInventoryItem)
-  .delete(deleteInventoryItem);
+  .get(authorize('Admin'), getInventoryItemById)
+  .put(authorize('Admin'), updateInventoryItem)
+  .delete(authorize('Admin'), deleteInventoryItem);
 
 /**
  * @swagger
@@ -203,7 +204,7 @@ inventoryRouter.route("/:id")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 inventoryRouter.route("/distribution/distribute")
-  .post(distributeItem);
+  .post(authorize('Admin'), distributeItem);
 
 /**
  * @swagger
@@ -251,7 +252,7 @@ inventoryRouter.route("/distribution/distribute")
  *         $ref: '#/components/responses/Unauthorized'
  */
 inventoryRouter.route("/distribution/student/:studentId")
-  .get(getStudentDistributions);
+  .get(authorize('Admin'), getStudentDistributions);
 
 /**
  * @swagger
@@ -267,7 +268,7 @@ inventoryRouter.route("/distribution/student/:studentId")
  *         name: itemType
  *         schema:
  *           type: string
- *           enum: [Uniform, Books, Stationery, Tracksuit, Other]
+ *           enum: [Uniform, Books, Stationery]
  *         description: Filter by item type
  *       - in: query
  *         name: paymentStatus
@@ -298,6 +299,6 @@ inventoryRouter.route("/distribution/student/:studentId")
  *         $ref: '#/components/responses/Unauthorized'
  */
 inventoryRouter.route("/distribution/all")
-  .get(getAllDistributions);
+  .get(authorize('Admin'), getAllDistributions);
 
 export default inventoryRouter;

@@ -1,10 +1,20 @@
 import { Schema } from "mongoose";
 
+const INVENTORY_ITEM_TYPES = [
+  'Uniform',
+  'Books',
+  'Stationery',
+];
+
 let inventorySchema = Schema({
   itemType: {
     type: String,
     required: true,
-    enum: ['Uniform', 'Books', 'Stationery', 'Tracksuit', 'Other']
+    enum: INVENTORY_ITEM_TYPES
+  },
+  category: {
+    type: String,
+    enum: INVENTORY_ITEM_TYPES
   },
   itemName: {
     type: String,
@@ -22,15 +32,26 @@ let inventorySchema = Schema({
     required: true,
     default: 0
   },
+  unit: {
+    type: String,
+    default: 'Piece'
+  },
+  minimumQuantity: {
+    type: Number,
+    default: 0
+  },
   price: {
     type: Number,
     required: true
+  },
+  unitPrice: {
+    type: Number
   },
   applicableClasses: [{
     type: Schema.Types.ObjectId,
     ref: 'Class'
   }],
-  supplier: {
+  location: {
     type: String
   },
   status: {
