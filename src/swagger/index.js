@@ -36,7 +36,7 @@ const swaggerDefinition = {
           phoneNumber: { type: 'string', example: '9811223344' },
           email: { type: 'string', format: 'email', example: 'admin@shiningstar.edu' },
           password: { type: 'string', example: 'Str0ngP@ss' },
-          role: { type: 'string', enum: ['Admin', 'Teacher', 'Parent', 'Staff'], example: 'Admin' },
+          role: { type: 'string', enum: ['SuperAdmin', 'Admin'], example: 'Admin' },
           profile: { type: 'string', description: 'ObjectId linking to Teacher or Family profile' },
           profileModel: { type: 'string', enum: ['Teacher', 'Family'] },
         },
@@ -113,12 +113,12 @@ const swaggerDefinition = {
         properties: {
           studentId: { type: 'string', example: 'STU00001', description: 'Optional. Auto-generated if omitted.' },
           name: { type: 'string', example: 'Ram Kumar Sharma' },
-          dateOfBirth: { type: 'string', format: 'date', example: '2010-03-15' },
+          dateOfBirth: { type: 'string', format: 'date', example: '2066-12-01', description: 'BS date (YYYY-MM-DD)' },
           gender: { type: 'string', enum: ['Male', 'Female', 'Other'], example: 'Male' },
           family: { type: 'string', description: 'Family ObjectId', example: '507f1f77bcf86cd799439099' },
           currentClass: { type: 'string', description: 'Class ObjectId', example: '507f1f77bcf86cd799439011' },
           rollNumber: { type: 'integer', example: 5 },
-          admissionDate: { type: 'string', format: 'date', example: '2023-04-01' },
+          admissionDate: { type: 'string', format: 'date', example: '2080-01-01', description: 'BS date (YYYY-MM-DD)' },
           academicYear: { type: 'string', example: '2081-2082' },
           previousSchool: { type: 'string' },
           photo: { type: 'string', description: 'Uploaded photo URL' },
@@ -155,13 +155,6 @@ const swaggerDefinition = {
           admissionDate: { type: 'string', format: 'date-time' },
           academicYear: { type: 'string' },
           status: { type: 'string' },
-          feeBalance: {
-            type: 'object',
-            properties: {
-              totalDue: { type: 'number' },
-              totalAdvance: { type: 'number' },
-            },
-          },
           enrollmentHistory: {
             type: 'array',
             items: {
@@ -253,7 +246,7 @@ const swaggerDefinition = {
           name: { type: 'string', example: 'Ms. Priya Devi' },
           email: { type: 'string', format: 'email', example: 'priya@shiningstar.edu' },
           phone: { type: 'string', example: '9811223344' },
-          dateOfBirth: { type: 'string', format: 'date' },
+          dateOfBirth: { type: 'string', format: 'date', example: '2048-07-12', description: 'BS date (YYYY-MM-DD)' },
           gender: { type: 'string', enum: ['Male', 'Female', 'Other'] },
           address: { type: 'string' },
           qualification: { type: 'string', example: 'B.Ed' },
@@ -345,14 +338,14 @@ const swaggerDefinition = {
       // ── Exam ──────────────────────────────────────────────────────────────
       ExamCreate: {
         type: 'object',
-        required: ['examName', 'examType', 'academicYear', 'startDate', 'endDate'],
+        required: ['examName', 'terminalNumber', 'academicYear', 'startDate', 'endDate'],
         properties: {
           examName: { type: 'string', example: '1st Terminal' },
-          examType: { type: 'string', enum: ['Terminal', 'Final', 'Unit Test', 'Other'] },
+          terminalNumber: { type: 'integer', enum: [1, 2, 3, 4], description: 'Terminal 1-4. Auto-charges 3 months tuition per family on creation.' },
           academicYear: { type: 'string', example: '2081-2082' },
           classes: { type: 'array', items: { type: 'string' } },
-          startDate: { type: 'string', format: 'date' },
-          endDate: { type: 'string', format: 'date' },
+          startDate: { type: 'string', format: 'date', example: '2081-06-10', description: 'BS date (YYYY-MM-DD)' },
+          endDate: { type: 'string', format: 'date', example: '2081-06-20', description: 'BS date (YYYY-MM-DD)' },
           status: { type: 'string', enum: ['Scheduled', 'Ongoing', 'Completed', 'Cancelled'], default: 'Scheduled' },
           subjects: {
             type: 'array',
@@ -360,7 +353,7 @@ const swaggerDefinition = {
               type: 'object',
               properties: {
                 subject: { type: 'string' },
-                examDate: { type: 'string', format: 'date' },
+                examDate: { type: 'string', format: 'date', example: '2081-06-12', description: 'BS date (YYYY-MM-DD)' },
                 fullMarks: { type: 'integer' },
                 passMarks: { type: 'integer' },
               },
@@ -393,50 +386,40 @@ const swaggerDefinition = {
         },
       },
 
-      // ── Fee ───────────────────────────────────────────────────────────────
-      FeeStructureCreate: {
+      // ── Fee (family-level billing) ────────────────────────────────────────
+      FeeChargeRequest: {
         type: 'object',
-        required: ['class', 'academicYear'],
+        required: ['familyId', 'description', 'chargeAmount'],
         properties: {
-          class: { type: 'string', description: 'Class ObjectId' },
-          academicYear: { type: 'string', example: '2081-2082' },
-          fees: {
+          familyId: { type: 'string' },
+          description: { type: 'string', example: 'Monthly fee - Asar 2081' },
+          chargeAmount: { type: 'number', example: 5000 },
+          billNumber: { type: 'string' },
+          feeMonth: { type: 'string' },
+          feeBreakdown: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                feeType: { type: 'string', enum: ['Admission', 'Monthly', 'Exam', 'Uniform', 'Books', 'Stationery', 'Tracksuit', 'Other'] },
+                feeType: { type: 'string' },
                 amount: { type: 'number' },
-                description: { type: 'string' },
+                student: { type: 'string', description: 'Optional student ObjectId' },
               },
             },
           },
-          monthlyFee: { type: 'number', default: 0 },
-          admissionFee: { type: 'number', default: 0 },
-          examFee: { type: 'number', default: 0 },
-        },
-      },
-      FeeChargeRequest: {
-        type: 'object',
-        required: ['studentId', 'description', 'chargeAmount'],
-        properties: {
-          studentId: { type: 'string' },
-          description: { type: 'string', example: 'Monthly fee - Asar 2081' },
-          chargeAmount: { type: 'number', example: 5000 },
-          billNumber: { type: 'string' },
-          feeBreakdown: { type: 'array', items: { type: 'object', properties: { feeType: { type: 'string' }, amount: { type: 'number' } } } },
         },
       },
       FeePaymentRequest: {
         type: 'object',
-        required: ['studentId', 'paidAmount'],
+        required: ['familyId', 'paidAmount'],
         properties: {
-          studentId: { type: 'string' },
+          familyId: { type: 'string' },
           description: { type: 'string' },
           paidAmount: { type: 'number', example: 5000 },
           paymentMethod: { type: 'string', enum: ['Cash', 'Bank Transfer', 'Cheque', 'Online'], default: 'Cash' },
           chequeNumber: { type: 'string' },
           transactionReference: { type: 'string' },
+          feeMonths: { type: 'string' },
         },
       },
 
@@ -470,18 +453,16 @@ const swaggerDefinition = {
       // ── Notification ──────────────────────────────────────────────────────
       NotificationCreate: {
         type: 'object',
-        required: ['title', 'message', 'notificationType', 'targetAudience'],
+        required: ['message', 'targetAudience'],
         properties: {
-          title: { type: 'string', example: 'Exam Schedule Update' },
-          message: { type: 'string', example: 'The final exam schedule has been updated.' },
-          notificationType: { type: 'string', enum: ['Fee Reminder', 'Result Published', 'Holiday', 'Event', 'Exam Schedule', 'General', 'Attendance Alert'] },
+          message: { type: 'string', example: 'Dear Parent, school will remain closed tomorrow.' },
           targetAudience: { type: 'string', enum: ['All Parents', 'Class-wise', 'Custom Group', 'Individual'] },
           classes: { type: 'array', items: { type: 'string' }, description: 'Required if targetAudience is Class-wise' },
           recipients: { type: 'array', items: { type: 'string' }, description: 'Required if targetAudience is Custom Group or Individual' },
           sendSMS: { type: 'boolean', default: false },
-          sendPushNotification: { type: 'boolean', default: true },
+          sendPushNotification: { type: 'boolean', default: false },
           sendEmail: { type: 'boolean', default: false },
-          scheduledDate: { type: 'string', format: 'date-time' },
+          scheduledDate: { type: 'string', format: 'date-time', example: '2081-06-15T09:00', description: 'BS local date-time' },
         },
       },
       FeeReminderRequest: {
@@ -496,7 +477,7 @@ const swaggerDefinition = {
         required: ['studentIds', 'date'],
         properties: {
           studentIds: { type: 'array', items: { type: 'string' } },
-          date: { type: 'string', format: 'date' },
+          date: { type: 'string', format: 'date', example: '2081-10-15', description: 'BS date (YYYY-MM-DD)' },
         },
       },
 
