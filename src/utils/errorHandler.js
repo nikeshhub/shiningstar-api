@@ -1,5 +1,12 @@
 // Centralized error classification for consistent HTTP status codes across all controllers
 export const handleError = (res, error) => {
+  if (error.status || error.statusCode) {
+    return res.status(error.status || error.statusCode).json({
+      success: false,
+      message: error.message || "Request failed",
+    });
+  }
+
   // Mongoose validation error (e.g. required fields missing, invalid enum)
   if (error.name === 'ValidationError') {
     return res.status(400).json({ success: false, message: error.message });
