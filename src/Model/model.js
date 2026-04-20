@@ -16,6 +16,7 @@ import userSchema from "../Schema/user.js";
 import timetableSchema from "../Schema/timetable.js";
 import teacherAttendanceSchema from "../Schema/teacherAttendance.js";
 import counterSchema from "../Schema/counter.js";
+import settingsSchema from "../Schema/settings.js";
 
 export const Student = model("Student", studentSchema);
 export const Class = model("Class", classSchema);
@@ -34,3 +35,4 @@ export const User = model("User", userSchema);
 export const Timetable = model("Timetable", timetableSchema);
 export const TeacherAttendance = model("TeacherAttendance", teacherAttendanceSchema);
 export const Counter = model("Counter", counterSchema);
+export const Settings = model("Settings", settingsSchema);

@@ -17,6 +17,7 @@ import subjectRouter from "./src/Routes/subject.js";
 import timetableRouter from "./src/Routes/timetable.js";
 import teacherAttendanceRouter from "./src/Routes/teacherAttendance.js";
 import progressReportRouter from "./src/Routes/progressReport.js";
+import settingsRouter from "./src/Routes/settings.js";
 import { authenticate } from "./src/Middleware/auth.js";
 import { startNotificationScheduler } from "./src/services/notificationScheduler.js";
 
@@ -74,6 +75,7 @@ app.use("/api/subjects", authenticate, subjectRouter);
 app.use("/api/timetable", authenticate, timetableRouter);
 app.use("/api/teacher-attendance", authenticate, teacherAttendanceRouter);
 app.use("/api/progress-reports", authenticate, progressReportRouter);
+app.use("/api/settings", authenticate, settingsRouter);
 
 const startServer = async () => {
   await connectToMongoDb();
