@@ -21,7 +21,7 @@ const getActiveAcademicYear = async () => {
 //
 // IMPORTANT: `postFamilyLedgerEntry` below is the ONLY function that writes to
 // FeeTransaction + Family.familyFeeBalance. Every caller (manual charge/payment,
-// exam fees, inventory charges) MUST go through it. Do not write these two
+// inventory charges) MUST go through it. Do not write these two
 // collections directly anywhere else — doing so breaks the invariant that the
 // mirror matches the latest ledger row.
 

@@ -5,7 +5,7 @@ const swaggerDefinition = {
   info: {
     title: 'Shining Star School Management System API',
     version: '1.0.0',
-    description: 'RESTful API for managing students, classes, teachers, attendance, exams, fees, inventory, and notifications.',
+    description: 'RESTful API for managing students, classes, teachers, attendance, fees, inventory, and notifications.',
     contact: {
       name: 'Shining Star Dev Team',
     },
@@ -342,57 +342,6 @@ const swaggerDefinition = {
         },
       },
 
-      // ── Exam ──────────────────────────────────────────────────────────────
-      ExamCreate: {
-        type: 'object',
-        required: ['examName', 'examType', 'academicYear', 'startDate', 'endDate'],
-        properties: {
-          examName: { type: 'string', example: '1st Terminal' },
-          examType: { type: 'string', enum: ['Terminal', 'Final', 'Unit Test', 'Other'] },
-          academicYear: { type: 'string', example: '2081-2082' },
-          classes: { type: 'array', items: { type: 'string' } },
-          startDate: { type: 'string', format: 'date' },
-          endDate: { type: 'string', format: 'date' },
-          status: { type: 'string', enum: ['Scheduled', 'Ongoing', 'Completed', 'Cancelled'], default: 'Scheduled' },
-          subjects: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                subject: { type: 'string' },
-                examDate: { type: 'string', format: 'date' },
-                fullMarks: { type: 'integer' },
-                passMarks: { type: 'integer' },
-              },
-            },
-          },
-          remarks: { type: 'string' },
-        },
-      },
-      EnterMarksRequest: {
-        type: 'object',
-        required: ['studentId', 'examId', 'classId', 'academicYear', 'subjectMarks'],
-        properties: {
-          studentId: { type: 'string' },
-          examId: { type: 'string' },
-          classId: { type: 'string' },
-          academicYear: { type: 'string' },
-          subjectMarks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                subject: { type: 'string' },
-                fullMarks: { type: 'integer' },
-                passMarks: { type: 'integer' },
-                obtainedMarks: { type: 'integer' },
-                remarks: { type: 'string' },
-              },
-            },
-          },
-        },
-      },
-
       // ── Fee ───────────────────────────────────────────────────────────────
       FeeStructureCreate: {
         type: 'object',
@@ -405,7 +354,7 @@ const swaggerDefinition = {
             items: {
               type: 'object',
               properties: {
-                feeType: { type: 'string', enum: ['Admission', 'Monthly', 'Exam', 'Uniform', 'Books', 'Stationery', 'Tracksuit', 'Other'] },
+                feeType: { type: 'string', enum: ['Admission', 'Monthly', 'Uniform', 'Books', 'Stationery', 'Tracksuit', 'Other'] },
                 amount: { type: 'number' },
                 description: { type: 'string' },
               },
@@ -413,7 +362,6 @@ const swaggerDefinition = {
           },
           monthlyFee: { type: 'number', default: 0 },
           admissionFee: { type: 'number', default: 0 },
-          examFee: { type: 'number', default: 0 },
         },
       },
       FeeChargeRequest: {
@@ -472,9 +420,9 @@ const swaggerDefinition = {
         type: 'object',
         required: ['title', 'message', 'notificationType', 'targetAudience'],
         properties: {
-          title: { type: 'string', example: 'Exam Schedule Update' },
-          message: { type: 'string', example: 'The final exam schedule has been updated.' },
-          notificationType: { type: 'string', enum: ['Fee Reminder', 'Result Published', 'Holiday', 'Event', 'Exam Schedule', 'General', 'Attendance Alert'] },
+          title: { type: 'string', example: 'School Notice' },
+          message: { type: 'string', example: 'School will remain closed tomorrow.' },
+          notificationType: { type: 'string', enum: ['Fee Reminder', 'Result Published', 'Holiday', 'Event', 'General', 'Attendance Alert'] },
           targetAudience: { type: 'string', enum: ['All Parents', 'Class-wise', 'Custom Group', 'Individual'] },
           classes: { type: 'array', items: { type: 'string' }, description: 'Required if targetAudience is Class-wise' },
           recipients: { type: 'array', items: { type: 'string' }, description: 'Required if targetAudience is Custom Group or Individual' },
@@ -543,7 +491,6 @@ const swaggerDefinition = {
     { name: 'Teachers', description: 'Teacher CRUD operations' },
     { name: 'Subjects', description: 'Subject configuration' },
     { name: 'Attendance', description: 'Daily attendance marking & reporting' },
-    { name: 'Exams', description: 'Exam scheduling, marks entry & results' },
     { name: 'Fees', description: 'Fee structures, charges, payments & ledger' },
     { name: 'Inventory', description: 'School inventory items & student distributions' },
     { name: 'Notifications', description: 'Notifications, fee reminders & absence alerts' },
@@ -559,7 +506,6 @@ const options = {
     './src/Routes/teachers.js',
     './src/Routes/subject.js',
     './src/Routes/attendance.js',
-    './src/Routes/exam.js',
     './src/Routes/fee.js',
     './src/Routes/inventory.js',
     './src/Routes/notification.js',

@@ -7,9 +7,7 @@ import {
   Family,
   FeeTransaction,
   InventoryDistribution,
-  Marks,
   Notification,
-  ProgressReport,
   Student,
 } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
@@ -72,14 +70,6 @@ const STUDENT_DELETE_DEPENDENCIES = [
   {
     label: "fee transactions",
     count: (studentId) => FeeTransaction.countDocuments({ student: studentId }),
-  },
-  {
-    label: "marks records",
-    count: (studentId) => Marks.countDocuments({ student: studentId }),
-  },
-  {
-    label: "progress reports",
-    count: (studentId) => ProgressReport.countDocuments({ student: studentId }),
   },
   {
     label: "inventory distributions",
