@@ -2,6 +2,7 @@ import { Inventory, InventoryDistribution, Student, FeeTransaction } from "../Mo
 import { handleError } from "../utils/errorHandler.js";
 import { getRequestUserId } from "../utils/requestUser.js";
 import { getNextNumericBillNumber } from "../utils/billNumber.js";
+import { parseDateInputForBoundary } from "../utils/nepaliDate.js";
 import { postFamilyLedgerEntry } from "./fee.js";
 
 const DEFAULT_INVENTORY_CATEGORY = "Stationery";
@@ -336,8 +337,20 @@ export let getAllDistributions = async (req, res) => {
     if (paymentStatus) query.paymentStatus = paymentStatus;
     if (startDate || endDate) {
       query.distributionDate = {};
-      if (startDate) query.distributionDate.$gte = new Date(startDate);
-      if (endDate) query.distributionDate.$lte = new Date(endDate);
+      if (startDate) {
+        const parsedStart = parseDateInputForBoundary(startDate, { boundary: "start" });
+        if (!parsedStart) {
+          return res.status(400).json({ success: false, message: "Start date is invalid" });
+        }
+        query.distributionDate.$gte = parsedStart;
+      }
+      if (endDate) {
+        const parsedEnd = parseDateInputForBoundary(endDate, { boundary: "end" });
+        if (!parsedEnd) {
+          return res.status(400).json({ success: false, message: "End date is invalid" });
+        }
+        query.distributionDate.$lte = parsedEnd;
+      }
     }
 
     const distributions = await InventoryDistribution.find(query)
