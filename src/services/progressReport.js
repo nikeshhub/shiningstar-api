@@ -1,15 +1,10 @@
 import { ProgressReport, Marks, Student, Class, Attendance, Exam } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
-import { getApplicableTerminals } from "../utils/gradeCalculator.js";
+import { getReportCategory, getApplicableTerminals, calculateGPA } from "../utils/gradeCalculator.js";
 import { generateProgressReportPDF } from "../utils/pdfGenerator.js";
 import { uploadBufferToCloudinary } from "../config/cloudinary.js";
 import { getRequestUserId } from "../utils/requestUser.js";
 import { withFamilyContact } from "../utils/studentFamily.js";
-import {
-  canParentAccessStudent,
-  canTeacherAccessClassId,
-  canTeacherAccessStudent,
-} from "../utils/accessScope.js";
 
 const emptyAttendance = () => ({
   totalDays: 0,
@@ -17,23 +12,6 @@ const emptyAttendance = () => ({
   absent: 0,
   percentage: 0
 });
-
-const ensureTeacherCanAccessReportClass = async (req, progressReport, res, action) => {
-  if (req.user?.role !== "Teacher") {
-    return true;
-  }
-
-  const allowed = await canTeacherAccessClassId(req, progressReport?.class);
-  if (!allowed) {
-    res.status(403).json({
-      success: false,
-      message: `Access denied. You can only ${action} for your class teacher classes.`,
-    });
-    return false;
-  }
-
-  return true;
-};
 
 const addDays = (date, days) => {
   const result = new Date(date);
@@ -44,6 +22,7 @@ const addDays = (date, days) => {
 async function buildTerminalDateRanges(classId, academicYear) {
   const [terminalExams, firstAttendance] = await Promise.all([
     Exam.find({
+      examType: "Terminal",
       academicYear,
       classes: classId,
       terminalNumber: { $ne: null },
@@ -117,17 +96,8 @@ export let generateProgressReport = async (req, res) => {
       });
     }
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, student);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only generate reports for students in your class teacher classes.",
-        });
-      }
-    }
-
     const classDoc = student.currentClass;
+    const reportCategory = getReportCategory(classDoc.className);
     const applicableTerminals = getApplicableTerminals(classDoc.className);
     const terminalDateRanges = await buildTerminalDateRanges(classDoc._id, academicYear);
 
@@ -138,7 +108,6 @@ export let generateProgressReport = async (req, res) => {
       // Get marks for this terminal
       const marks = await Marks.findOne({
         student: studentId,
-        class: classDoc._id,
         academicYear,
         terminalNumber
       }).populate('subjectMarks.subject', 'subjectName subjectCode creditHours');
@@ -195,6 +164,7 @@ export let generateProgressReport = async (req, res) => {
     if (progressReport) {
       // Update existing
       progressReport.class = classDoc._id;
+      progressReport.reportCategory = reportCategory;
       progressReport.terminals = terminals;
       progressReport.yearlyTotal = {
         gradePoint: parseFloat(yearlyGPA.toFixed(2)),
@@ -210,6 +180,7 @@ export let generateProgressReport = async (req, res) => {
         student: studentId,
         class: classDoc._id,
         academicYear,
+        reportCategory,
         terminals,
         yearlyTotal: {
           gradePoint: parseFloat(yearlyGPA.toFixed(2)),
@@ -303,26 +274,6 @@ export let getProgressReport = async (req, res) => {
   try {
     const { studentId, academicYear } = req.query;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view reports for students in your class teacher classes.",
-        });
-      }
-    }
-
-    if (req.user?.role === "Parent") {
-      const allowed = await canParentAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view reports for your children.",
-        });
-      }
-    }
-
     const progressReport = await ProgressReport.findOne({
       student: studentId,
       academicYear
@@ -351,10 +302,6 @@ export let getProgressReport = async (req, res) => {
       });
     }
 
-    if (!(await ensureTeacherCanAccessReportClass(req, progressReport, res, "view reports"))) {
-      return;
-    }
-
     res.status(200).json({
       success: true,
       message: "Progress report fetched successfully",
@@ -373,16 +320,6 @@ export let getProgressReport = async (req, res) => {
 export let getClassProgressReports = async (req, res) => {
   try {
     const { classId, academicYear } = req.query;
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, classId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view reports for your class teacher classes.",
-        });
-      }
-    }
 
     const progressReports = await ProgressReport.find({
       class: classId,
@@ -406,16 +343,6 @@ export let getClassProgressReports = async (req, res) => {
 export let bulkGenerateProgressReports = async (req, res) => {
   try {
     const { classId, academicYear } = req.body;
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, classId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only generate reports for your class teacher classes.",
-        });
-      }
-    }
 
     // Get all active students in the class
     const students = await Student.find({
@@ -441,6 +368,7 @@ export let bulkGenerateProgressReports = async (req, res) => {
       });
     }
 
+    const reportCategory = getReportCategory(classDoc.className);
     const applicableTerminals = getApplicableTerminals(classDoc.className);
     const terminalDateRanges = await buildTerminalDateRanges(classId, academicYear);
 
@@ -451,7 +379,6 @@ export let bulkGenerateProgressReports = async (req, res) => {
         for (const terminalNumber of applicableTerminals) {
           const marks = await Marks.findOne({
             student: student._id,
-            class: classId,
             academicYear,
             terminalNumber
           });
@@ -504,6 +431,7 @@ export let bulkGenerateProgressReports = async (req, res) => {
             student: student._id,
             class: classId,
             academicYear,
+            reportCategory,
             terminals,
             yearlyTotal: {
               gradePoint: parseFloat(yearlyGPA.toFixed(2)),
@@ -550,26 +478,6 @@ export let generateProgressReportPDFController = async (req, res) => {
   try {
     const { studentId, academicYear } = req.query;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only generate PDFs for students in your class teacher classes.",
-        });
-      }
-    }
-
-    if (req.user?.role === "Parent") {
-      const allowed = await canParentAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only generate PDFs for your children.",
-        });
-      }
-    }
-
     const progressReport = await ProgressReport.findOne({
       student: studentId,
       academicYear
@@ -589,10 +497,6 @@ export let generateProgressReportPDFController = async (req, res) => {
         success: false,
         message: "Progress report not found. Please generate it first."
       });
-    }
-
-    if (!(await ensureTeacherCanAccessReportClass(req, progressReport, res, "generate PDFs"))) {
-      return;
     }
 
     const pdfBuffer = await generateProgressReportPDF(progressReport);
@@ -620,26 +524,6 @@ export let downloadProgressReportPDF = async (req, res) => {
   try {
     const { studentId, academicYear } = req.query;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only download reports for students in your class teacher classes.",
-        });
-      }
-    }
-
-    if (req.user?.role === "Parent") {
-      const allowed = await canParentAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only download reports for your children.",
-        });
-      }
-    }
-
     const progressReport = await ProgressReport.findOne({
       student: studentId,
       academicYear
@@ -650,10 +534,6 @@ export let downloadProgressReportPDF = async (req, res) => {
         success: false,
         message: "Progress report not found"
       });
-    }
-
-    if (!(await ensureTeacherCanAccessReportClass(req, progressReport, res, "download reports"))) {
-      return;
     }
 
     if (!progressReport.pdfUrl) {

@@ -15,6 +15,11 @@ let progressReportSchema = Schema({
     type: String,
     required: true
   },
+  reportCategory: {
+    type: String,
+    enum: ['Nursery', 'LKG_UKG', 'Class_1_2_3', 'Class_4_8'],
+    required: true
+  },
 
   terminals: [{
     terminalNumber: {

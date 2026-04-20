@@ -108,6 +108,41 @@ export function calculateGPA(subjectMarks) {
 }
 
 /**
+ * Determine report category from class name
+ * @param {string} className - Name of the class
+ * @returns {string} - Report category
+ */
+export function getReportCategory(className) {
+  const lowerClassName = className.toLowerCase();
+
+  if (lowerClassName.includes('nursery')) {
+    return 'Nursery';
+  }
+
+  if (lowerClassName.includes('kg') ||
+      lowerClassName.includes('lkg') ||
+      lowerClassName.includes('ukg')) {
+    return 'LKG_UKG';
+  }
+
+  if (lowerClassName.includes('class 1') ||
+      lowerClassName.includes('class 2') ||
+      lowerClassName.includes('class 3')) {
+    return 'Class_1_2_3';
+  }
+
+  if (lowerClassName.includes('class 4') ||
+      lowerClassName.includes('class 5') ||
+      lowerClassName.includes('class 6') ||
+      lowerClassName.includes('class 7') ||
+      lowerClassName.includes('class 8')) {
+    return 'Class_4_8';
+  }
+
+  return 'Class_4_8'; // Default
+}
+
+/**
  * Get applicable terminals for a class
  * @param {string} className - Name of the class
  * @returns {array} - Array of terminal numbers

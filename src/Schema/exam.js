@@ -1,17 +1,21 @@
 import { Schema } from "mongoose";
 
-// Every exam is a terminal exam (T1-T4). Fees are auto-generated from
-// `class.monthlyFee × 3` (a terminal covers three months of tuition) when
-// the exam is created — there is no separate `examFee` stored here.
 let examSchema = Schema({
   examName: {
     type: String,
+    required: true // e.g., "First Terminal Exam", "Second Terminal Exam"
+  },
+  examType: {
+    type: String,
+    enum: ['Terminal', 'Final', 'Unit Test', 'Other'],
     required: true
   },
   terminalNumber: {
     type: Number,
     enum: [1, 2, 3, 4],
-    required: true
+    required: function() {
+      return this.examType === 'Terminal';
+    }
   },
   academicYear: {
     type: String,
@@ -49,9 +53,9 @@ let examSchema = Schema({
       type: Date,
       required: true
     },
-    startTime: String,
-    endTime: String,
-    duration: Number
+    startTime: String, // e.g., "10:00 AM"
+    endTime: String,   // e.g., "12:00 PM"
+    duration: Number   // in minutes
   }],
   noticeGenerated: {
     type: Boolean,
@@ -59,6 +63,16 @@ let examSchema = Schema({
   },
   noticeGeneratedAt: Date,
   noticePdfUrl: String,
+  examFee: {
+    type: Number,
+    default: 0,
+    required: true
+  },
+  feeGenerated: {
+    type: Boolean,
+    default: false
+  },
+  feeGeneratedAt: Date,
   remarks: {
     type: String
   }

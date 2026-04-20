@@ -1,113 +1,63 @@
-import { Exam, Marks, Student, Class, Subject } from "../Model/model.js";
+import { Exam, Marks, Student, Class, FeeStructure, FeeTransaction, Subject, Family } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
 import { getApplicableTerminals, calculateGrade, calculateGPA, calculateTotalMarks } from "../utils/gradeCalculator.js";
 import { generateExamNoticePDF, generateStudentExamNotice } from "../utils/pdfGenerator.js";
 import { uploadBufferToCloudinary } from "../config/cloudinary.js";
 import { getRequestTeacherId } from "../utils/requestUser.js";
-import { normalizeDateFields } from "../utils/nepaliDate.js";
-import { postFamilyLedgerEntry } from "./fee.js";
-import {
-  canParentAccessStudent,
-  canTeacherAccessClassId,
-  canTeacherAccessStudent,
-  getTeacherScope,
-  normalizeObjectId,
-} from "../utils/accessScope.js";
 
-// A terminal covers three months of tuition — fee = class.monthlyFee × 3.
-const MONTHS_PER_TERMINAL = 3;
-
-const examTouchesAllowedClass = (exam, allowedClassIds) =>
-  (exam?.classes || []).some((classId) => allowedClassIds.has(normalizeObjectId(classId)));
-
-const examOnlyUsesAllowedClasses = (exam, allowedClassIds) =>
-  (exam?.classes || []).every((classId) => allowedClassIds.has(normalizeObjectId(classId)));
-
-const classRefIsAllowed = (classRef, allowedClassIds) =>
-  allowedClassIds.has(normalizeObjectId(classRef));
-
-const filterExamToAllowedClasses = (exam, allowedClassIds) => {
-  const data = typeof exam?.toObject === "function" ? exam.toObject() : exam;
-  const canAccessFullNotice = examOnlyUsesAllowedClasses(data, allowedClassIds);
-
-  return {
-    ...data,
-    noticeGenerated: canAccessFullNotice ? data?.noticeGenerated : false,
-    noticePdfUrl: canAccessFullNotice ? data?.noticePdfUrl : undefined,
-    classes: (data?.classes || []).filter((classRef) =>
-      classRefIsAllowed(classRef, allowedClassIds)
-    ),
-    routine: (data?.routine || []).filter((entry) =>
-      classRefIsAllowed(entry?.class, allowedClassIds)
-    ),
-  };
-};
-
-// Create exam and immediately charge 3 months of tuition per student to their
-// family ledger. Every exam is a terminal (1-4).
+// Create exam with routine and auto-fee generation
 export let createExam = async (req, res) => {
   try {
-    const payload = normalizeDateFields(req.body, ["startDate", "endDate"]);
-    const routine = (payload.routine || []).map((entry) =>
-      normalizeDateFields(entry, ["examDate"])
-    );
-    const { examName, terminalNumber, academicYear, classes, startDate, endDate, remarks } = payload;
+    const { examName, examType, terminalNumber, academicYear, classes, startDate, endDate, routine, remarks } = req.body;
 
-    if (!terminalNumber || ![1, 2, 3, 4].includes(Number(terminalNumber))) {
-      return res.status(400).json({
-        success: false,
-        message: "terminalNumber must be 1, 2, 3, or 4",
-      });
-    }
+    // Validate terminal numbers for classes
+    if (examType === 'Terminal' && terminalNumber && classes && classes.length > 0) {
+      for (const classId of classes) {
+        const classDoc = await Class.findById(classId);
+        if (!classDoc) {
+          return res.status(404).json({
+            success: false,
+            message: `Class not found: ${classId}`
+          });
+        }
 
-    if (!classes || classes.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "At least one class must be selected",
-      });
-    }
-
-    // Validate each class supports this terminal (e.g. Nursery skips T1).
-    const classDocs = await Class.find({ _id: { $in: classes } });
-    if (classDocs.length !== classes.length) {
-      return res.status(404).json({
-        success: false,
-        message: "One or more classes not found",
-      });
-    }
-    for (const classDoc of classDocs) {
-      const applicable = getApplicableTerminals(classDoc.className);
-      if (!applicable.includes(Number(terminalNumber))) {
-        return res.status(400).json({
-          success: false,
-          message: `Terminal ${terminalNumber} is not applicable for ${classDoc.className}. Valid terminals: ${applicable.join(", ")}`,
-        });
+        const applicableTerminals = getApplicableTerminals(classDoc.className);
+        if (!applicableTerminals.includes(terminalNumber)) {
+          return res.status(400).json({
+            success: false,
+            message: `Terminal ${terminalNumber} is not applicable for ${classDoc.className}. Valid terminals: ${applicableTerminals.join(', ')}`
+          });
+        }
       }
     }
 
+    // Create exam
     const exam = await Exam.create({
       examName,
-      terminalNumber,
+      examType,
+      terminalNumber: examType === 'Terminal' ? terminalNumber : undefined,
       academicYear,
       classes,
       startDate,
       endDate,
-      routine,
-      status: "Scheduled",
+      routine: routine || [],
+      status: 'Scheduled',
       remarks,
-      noticeGenerated: false,
+      feeGenerated: false,
+      noticeGenerated: false
     });
 
-    await generateTerminalFees(exam, classDocs);
+    // Auto-generate fees for all students immediately
+    await generateExamFees(exam);
 
     const result = await Exam.findById(exam._id)
-      .populate("classes", "className")
-      .populate("routine.class", "className")
-      .populate("routine.subject", "subjectName subjectCode");
+      .populate('classes', 'className')
+      .populate('routine.class', 'className')
+      .populate('routine.subject', 'subjectName subjectCode');
 
     res.status(201).json({
       success: true,
-      message: "Exam created and terminal fees charged to families",
+      message: "Exam created successfully and fees generated",
       data: result,
     });
   } catch (error) {
@@ -115,102 +65,222 @@ export let createExam = async (req, res) => {
   }
 };
 
-// Charge each student's family: class.monthlyFee × 3 for the terminal.
-async function generateTerminalFees(exam, classDocs) {
-  const classFeeById = new Map(
-    classDocs.map((c) => [c._id.toString(), Number(c.monthlyFee) || 0])
-  );
+// Helper: Generate exam fees for all students (with family billing support)
+async function generateExamFees(exam) {
+  try {
+    const familyGroups = new Map(); // familyId -> { family, students: [], totalFee: 0 }
+    const individualStudents = []; // Students without family or with Individual billing
 
-  // familyId -> { family, entries: [{ student, amount }] }
-  const familyGroups = new Map();
+    // Process each class in the exam
+    for (const classId of exam.classes) {
+      // Get fee structure for this class
+      const feeStructure = await FeeStructure.findOne({
+        class: classId,
+        academicYear: exam.academicYear
+      });
 
-  for (const classId of exam.classes) {
-    const monthlyFee = classFeeById.get(classId.toString()) || 0;
-    const perStudentCharge = monthlyFee * MONTHS_PER_TERMINAL;
-    if (perStudentCharge <= 0) continue;
+      const examFeeAmount = feeStructure?.examFee || 0;
 
-    const students = await Student.find({
-      currentClass: classId,
-      status: "Active",
-    }).populate("family");
-
-    for (const student of students) {
-      if (!student.family) {
-        console.warn(`Student ${student.studentId} has no family; skipping terminal fee`);
-        continue;
+      if (examFeeAmount === 0) {
+        continue; // Skip if no exam fee configured
       }
-      const familyId = student.family._id.toString();
-      if (!familyGroups.has(familyId)) {
-        familyGroups.set(familyId, { family: student.family, entries: [] });
+
+      // Get all active students in this class
+      const students = await Student.find({
+        currentClass: classId,
+        status: 'Active'
+      }).populate('family');
+
+      // Group students by family vs individual
+      for (const student of students) {
+        if (student.family) {
+          // Student has a family - check billing type
+          const family = await Family.findById(student.family._id || student.family);
+
+          if (family && family.billingType === 'Family') {
+            // Family billing - group together
+            const familyId = family._id.toString();
+
+            if (!familyGroups.has(familyId)) {
+              familyGroups.set(familyId, {
+                family: family,
+                students: [],
+                totalFee: 0,
+                feeBreakdown: []
+              });
+            }
+
+            const group = familyGroups.get(familyId);
+            group.students.push(student);
+            group.totalFee += examFeeAmount;
+            group.feeBreakdown.push({
+              feeType: `Exam - ${student.name}`,
+              amount: examFeeAmount
+            });
+          } else {
+            // Individual billing despite having family
+            individualStudents.push({ student, examFeeAmount });
+          }
+        } else {
+          // No family - individual billing
+          individualStudents.push({ student, examFeeAmount });
+        }
       }
-      familyGroups.get(familyId).entries.push({ student, amount: perStudentCharge });
     }
-  }
 
-  for (const [familyId, group] of familyGroups) {
-    const totalFee = group.entries.reduce((sum, e) => sum + e.amount, 0);
-    const feeBreakdown = group.entries.map(({ student, amount }) => ({
-      feeType: `Terminal ${exam.terminalNumber} Fee - ${student.name} (${MONTHS_PER_TERMINAL} months)`,
-      amount,
-      student: student._id,
-    }));
-    const billNumber = `EXAM-T${exam.terminalNumber}-${Date.now()}-FAM-${group.family.familyId}`;
+    // Create family-level charges and student notices
+    for (const [familyId, group] of familyGroups) {
+      // Get last family transaction to calculate running balance
+      const lastTransaction = await FeeTransaction
+        .findOne({ family: familyId, billingScope: 'Family' })
+        .sort({ date: -1 });
 
-    const feeTransaction = await postFamilyLedgerEntry({
-      familyId,
-      delta: totalFee,
-      transactionType: "Charge",
-      description: `${exam.examName} - ${MONTHS_PER_TERMINAL} months tuition`,
-      chargeAmount: totalFee,
-      billNumber,
-      feeBreakdown,
-      academicYear: exam.academicYear,
-      remarks: `Auto-generated on exam creation for ${group.entries.length} student(s)`,
-    });
+      const previousBalance = lastTransaction
+        ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
+        : 0;
 
-    for (const { student } of group.entries) {
+      const newTotalDue = previousBalance + group.totalFee;
+
+      // Use first student as reference for the transaction
+      const primaryStudent = group.students[0];
+
+      // Generate unique bill number
+      const billNumber = `EXAM-${exam.terminalNumber || 'FINAL'}-${Date.now()}-FAM-${group.family.familyId}`;
+
+      const feeTransaction = await FeeTransaction.create({
+        student: primaryStudent._id,
+        family: familyId,
+        billingScope: 'Family',
+        date: new Date(),
+        billNumber,
+        transactionType: 'Charge',
+        description: `${exam.examName} Fee (Family - ${group.students.length} students)`,
+        chargeAmount: group.totalFee,
+        paidAmount: 0,
+        previousBalance,
+        totalDue: newTotalDue > 0 ? newTotalDue : 0,
+        totalAdvance: newTotalDue < 0 ? Math.abs(newTotalDue) : 0,
+        feeBreakdown: group.feeBreakdown,
+        remarks: `Auto-generated for ${exam.examName} - Family billing for: ${group.students.map(s => s.name).join(', ')}`
+      });
+
+      // Update family balance
+      await Family.findByIdAndUpdate(familyId, {
+        'familyFeeBalance.totalDue': newTotalDue > 0 ? newTotalDue : 0,
+        'familyFeeBalance.totalAdvance': newTotalDue < 0 ? Math.abs(newTotalDue) : 0
+      });
+
+      // Generate student exam notices for each student in the family
+      for (const student of group.students) {
+        try {
+          // Get student's exam routine from the exam routine array
+          const studentRoutine = exam.routine.filter(r =>
+            r.class.toString() === student.currentClass._id.toString()
+          );
+
+          // Populate subject details for routine
+          const populatedRoutine = await Promise.all(
+            studentRoutine.map(async (r) => {
+              const subject = await Subject.findById(r.subject);
+              return { ...r, subject };
+            })
+          );
+
+          const pdfBuffer = await generateStudentExamNotice({
+            exam, student, studentRoutine: populatedRoutine, feeTransaction, family: group.family,
+          });
+          await uploadBufferToCloudinary(pdfBuffer, 'exam-notices', 'raw');
+          console.log(`Generated exam notice for student ${student.studentId}`);
+        } catch (error) {
+          console.error(`Error generating notice for student ${student.studentId}:`, error);
+        }
+      }
+    }
+
+    // Create individual charges and student notices
+    for (const { student, examFeeAmount } of individualStudents) {
+      // Check for existing dues
+      const lastTransaction = await FeeTransaction.findOne({
+        student: student._id,
+        billingScope: 'Individual'
+      }).sort({ date: -1 });
+
+      const previousBalance = lastTransaction
+        ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
+        : 0;
+
+      const newTotalDue = previousBalance + examFeeAmount;
+
+      // Generate unique bill number
+      const billNumber = `EXAM-${exam.terminalNumber || 'FINAL'}-${Date.now()}-${student.studentId}`;
+
+      const feeTransaction = await FeeTransaction.create({
+        student: student._id,
+        billingScope: 'Individual',
+        date: new Date(),
+        billNumber,
+        transactionType: 'Charge',
+        description: `${exam.examName} Fee`,
+        chargeAmount: examFeeAmount,
+        paidAmount: 0,
+        previousBalance,
+        totalDue: newTotalDue > 0 ? newTotalDue : 0,
+        totalAdvance: newTotalDue < 0 ? Math.abs(newTotalDue) : 0,
+        feeBreakdown: [{
+          feeType: 'Exam',
+          amount: examFeeAmount
+        }],
+        remarks: `Auto-generated for ${exam.examName}`
+      });
+
+      // Generate student exam notice
       try {
-        const studentRoutine = exam.routine.filter(
-          (r) => r.class.toString() === student.currentClass._id.toString()
+        // Get student's exam routine from the exam routine array
+        const studentRoutine = exam.routine.filter(r =>
+          r.class.toString() === student.currentClass._id.toString()
         );
+
+        // Populate subject details for routine
         const populatedRoutine = await Promise.all(
           studentRoutine.map(async (r) => {
             const subject = await Subject.findById(r.subject);
             return { ...r, subject };
           })
         );
+
         const pdfBuffer = await generateStudentExamNotice({
-          exam,
-          student,
-          studentRoutine: populatedRoutine,
-          feeTransaction,
-          family: group.family,
+          exam, student, studentRoutine: populatedRoutine, feeTransaction, family: null,
         });
-        await uploadBufferToCloudinary(pdfBuffer, "exam-notices", "raw");
+        await uploadBufferToCloudinary(pdfBuffer, 'exam-notices', 'raw');
+        console.log(`Generated exam notice for student ${student.studentId}`);
       } catch (error) {
         console.error(`Error generating notice for student ${student.studentId}:`, error);
       }
     }
-  }
 
-  console.log(`Terminal ${exam.terminalNumber} fees generated: ${familyGroups.size} families`);
+    // Mark fees as generated
+    exam.feeGenerated = true;
+    exam.feeGeneratedAt = new Date();
+    await exam.save();
+
+    console.log(`Exam fees generated: ${familyGroups.size} families, ${individualStudents.length} individual students`);
+
+  } catch (error) {
+    console.error('Error generating exam fees:', error);
+    throw error;
+  }
 }
 
 // Get all exams
 export let getAllExams = async (req, res) => {
   try {
-    const { academicYear, status, terminalNumber } = req.query;
+    const { academicYear, examType, status, terminalNumber } = req.query;
     let query = {};
-    let teacherScope = null;
 
     if (academicYear) query.academicYear = academicYear;
+    if (examType) query.examType = examType;
     if (status) query.status = status;
     if (terminalNumber) query.terminalNumber = parseInt(terminalNumber);
-
-    if (req.user?.role === "Teacher") {
-      teacherScope = await getTeacherScope(req);
-      query.classes = { $in: teacherScope.classIds };
-    }
 
     const result = await Exam.find(query)
       .populate('classes', 'className')
@@ -218,14 +288,10 @@ export let getAllExams = async (req, res) => {
       .populate('routine.subject', 'subjectName subjectCode')
       .sort({ startDate: -1 });
 
-    const data = teacherScope
-      ? result.map((exam) => filterExamToAllowedClasses(exam, teacherScope.classIdSet))
-      : result;
-
     res.status(200).json({
       success: true,
       message: "Exams fetched successfully",
-      data,
+      data: result,
     });
   } catch (error) {
     handleError(res, error);
@@ -247,22 +313,6 @@ export let getExamById = async (req, res) => {
       });
     }
 
-    if (req.user?.role === "Teacher") {
-      const scope = await getTeacherScope(req);
-      if (!examTouchesAllowedClass(result, scope.classIdSet)) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view exams for your class teacher classes.",
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Exam fetched successfully",
-        data: filterExamToAllowedClasses(result, scope.classIdSet),
-      });
-    }
-
     res.status(200).json({
       success: true,
       message: "Exam fetched successfully",
@@ -276,16 +326,9 @@ export let getExamById = async (req, res) => {
 // Update exam
 export let updateExam = async (req, res) => {
   try {
-    const payload = normalizeDateFields(req.body, ["startDate", "endDate"]);
-    if (Array.isArray(payload.routine)) {
-      payload.routine = payload.routine.map((entry) =>
-        normalizeDateFields(entry, ["examDate"])
-      );
-    }
-
     const result = await Exam.findByIdAndUpdate(
       req.params.id,
-      payload,
+      req.body,
       { new: true, runValidators: true }
     )
       .populate('classes', 'className')
@@ -303,6 +346,40 @@ export let updateExam = async (req, res) => {
       success: true,
       message: "Exam updated successfully",
       data: result,
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+};
+
+// Manually trigger fee generation for an exam
+export let triggerExamFeeGeneration = async (req, res) => {
+  try {
+    const exam = await Exam.findById(req.params.id);
+
+    if (!exam) {
+      return res.status(404).json({
+        success: false,
+        message: "Exam not found"
+      });
+    }
+
+    if (exam.feeGenerated) {
+      return res.status(400).json({
+        success: false,
+        message: "Fees have already been generated for this exam"
+      });
+    }
+
+    await generateExamFees(exam);
+
+    const updated = await Exam.findById(exam._id)
+      .populate('classes', 'className');
+
+    res.status(200).json({
+      success: true,
+      message: "Exam fees generated successfully",
+      data: updated
     });
   } catch (error) {
     handleError(res, error);
@@ -340,93 +417,116 @@ export let deleteExam = async (req, res) => {
   }
 };
 
-// Validate one subjectMarks entry against the Subject document. Returns a
-// shaped-and-graded object ready for persistence, or throws a Error with
-// `.status = 400` if the input violates bounds.
-async function buildSubjectMarksEntry(sm) {
-  const subject = await Subject.findById(sm.subject);
-  if (!subject) {
-    const err = new Error(`Subject not found: ${sm.subject}`);
-    err.status = 404;
-    throw err;
-  }
+// Enter marks for a student (with written + practical separation)
+export let enterMarks = async (req, res) => {
+  try {
+    const { studentId, examId, classId, academicYear, terminalNumber, subjectMarks } = req.body;
+    const enteredBy = getRequestTeacherId(req);
 
-  const written = Number(sm.writtenMarks) || 0;
-  const practical = Number(sm.practicalMarks) || 0;
+    // Validate exam exists
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(404).json({
+        success: false,
+        message: "Exam not found"
+      });
+    }
 
-  if (written < 0 || practical < 0) {
-    const err = new Error(`Marks cannot be negative for ${subject.subjectName}`);
-    err.status = 400;
-    throw err;
-  }
-  if (written > subject.writtenMarks) {
-    const err = new Error(
-      `Written marks (${written}) exceed max (${subject.writtenMarks}) for ${subject.subjectName}`
+    // Calculate totals and grades for each subject
+    let totalPossibleMarks = 0;
+    let totalObtainedMarks = 0;
+
+    const marksWithGrades = await Promise.all(
+      subjectMarks.map(async (sm) => {
+        // Get subject details
+        const subject = await Subject.findById(sm.subject);
+        if (!subject) {
+          throw new Error(`Subject not found: ${sm.subject}`);
+        }
+
+        // Calculate total marks from written + practical
+        const obtainedTotal = calculateTotalMarks(
+          sm.writtenMarks || 0,
+          sm.practicalMarks || 0
+        );
+
+        // Use subject's fullMarks
+        const fullMarks = subject.fullMarks;
+        const passMarks = subject.passMarks;
+
+        totalPossibleMarks += fullMarks;
+        totalObtainedMarks += obtainedTotal;
+
+        // Calculate grade using NEB system
+        const gradeData = sm.isAbsent
+          ? { percentage: 0, gradePoint: 0.0, gradeLetter: 'AB' }
+          : calculateGrade(obtainedTotal, fullMarks);
+
+        return {
+          subject: sm.subject,
+          writtenMarks: sm.writtenMarks || 0,
+          practicalMarks: sm.practicalMarks || 0,
+          totalMarks: fullMarks,
+          fullMarks,
+          passMarks,
+          obtainedMarks: obtainedTotal,
+          percentage: gradeData.percentage,
+          gradePoint: gradeData.gradePoint,
+          gradeLetter: gradeData.gradeLetter,
+          isAbsent: sm.isAbsent || false,
+          remarks: sm.remarks || ''
+        };
+      })
     );
-    err.status = 400;
-    throw err;
-  }
-  if (practical > subject.practicalMarks) {
-    const err = new Error(
-      `Practical marks (${practical}) exceed max (${subject.practicalMarks}) for ${subject.subjectName}`
+
+    // Calculate overall percentage
+    const overallPercentage = totalPossibleMarks > 0
+      ? (totalObtainedMarks / totalPossibleMarks) * 100
+      : 0;
+
+    // Calculate GPA from all subject grade points
+    const gpaData = calculateGPA(marksWithGrades);
+
+    // Determine pass/fail
+    const hasFailed = marksWithGrades.some(
+      m => !m.isAbsent && m.obtainedMarks < m.passMarks
     );
-    err.status = 400;
-    throw err;
-  }
+    const hasAbsent = marksWithGrades.some(m => m.isAbsent);
+    const result = hasFailed || hasAbsent ? 'Fail' : 'Pass';
 
-  const obtainedTotal = calculateTotalMarks(written, practical);
-  const fullMarks = subject.fullMarks;
-  const passMarks = subject.passMarks;
+    // Check if marks already exist
+    const existingMarks = await Marks.findOne({
+      student: studentId,
+      exam: examId
+    });
 
-  const gradeData = sm.isAbsent
-    ? { percentage: 0, gradePoint: 0.0, gradeLetter: 'AB' }
-    : calculateGrade(obtainedTotal, fullMarks);
+    if (existingMarks) {
+      // Update existing marks
+      existingMarks.subjectMarks = marksWithGrades;
+      existingMarks.terminalNumber = terminalNumber;
+      existingMarks.totalMarks = totalPossibleMarks;
+      existingMarks.totalObtained = totalObtainedMarks;
+      existingMarks.percentage = parseFloat(overallPercentage.toFixed(2));
+      existingMarks.gpa = gpaData.gpa;
+      existingMarks.overallGrade = gpaData.grade;
+      existingMarks.result = result;
+      existingMarks.enteredBy = enteredBy || existingMarks.enteredBy;
 
-  return {
-    entry: {
-      subject: sm.subject,
-      writtenMarks: written,
-      practicalMarks: practical,
-      totalMarks: fullMarks,
-      fullMarks,
-      passMarks,
-      obtainedMarks: obtainedTotal,
-      percentage: gradeData.percentage,
-      gradePoint: gradeData.gradePoint,
-      gradeLetter: gradeData.gradeLetter,
-      isAbsent: sm.isAbsent || false,
-      remarks: sm.remarks || '',
-    },
-    fullMarks,
-    obtainedTotal,
-  };
-}
+      await existingMarks.save();
 
-// Upsert a Marks document for one student.
-async function upsertStudentMarks({ studentId, examId, classId, academicYear, terminalNumber, subjectMarks, enteredBy }) {
-  let totalPossibleMarks = 0;
-  let totalObtainedMarks = 0;
-  const marksWithGrades = [];
+      const populated = await Marks.findById(existingMarks._id)
+        .populate('student', 'name studentId rollNumber')
+        .populate('subjectMarks.subject', 'subjectName subjectCode');
 
-  for (const sm of subjectMarks) {
-    const built = await buildSubjectMarksEntry(sm);
-    totalPossibleMarks += built.fullMarks;
-    totalObtainedMarks += built.obtainedTotal;
-    marksWithGrades.push(built.entry);
-  }
+      return res.status(200).json({
+        success: true,
+        message: "Marks updated successfully",
+        data: populated,
+      });
+    }
 
-  const overallPercentage = totalPossibleMarks > 0
-    ? (totalObtainedMarks / totalPossibleMarks) * 100
-    : 0;
-  const gpaData = calculateGPA(marksWithGrades);
-
-  const hasFailed = marksWithGrades.some((m) => !m.isAbsent && m.obtainedMarks < m.passMarks);
-  const hasAbsent = marksWithGrades.some((m) => m.isAbsent);
-  const result = hasFailed || hasAbsent ? 'Fail' : 'Pass';
-
-  return Marks.findOneAndUpdate(
-    { student: studentId, exam: examId },
-    {
+    // Create new marks entry
+    const marksEntry = await Marks.create({
       student: studentId,
       exam: examId,
       class: classId,
@@ -439,67 +539,16 @@ async function upsertStudentMarks({ studentId, examId, classId, academicYear, te
       gpa: gpaData.gpa,
       overallGrade: gpaData.grade,
       result,
-      ...(enteredBy ? { enteredBy } : {}),
-    },
-    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
-  );
-}
-
-// Enter or update marks for a single student. Upserts by (student, exam).
-export let enterMarks = async (req, res) => {
-  try {
-    const { studentId, examId, classId, academicYear, terminalNumber, subjectMarks } = req.body;
-    const enteredBy = getRequestTeacherId(req);
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, classId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only enter marks for your class teacher classes.",
-        });
-      }
-    }
-
-    const exam = await Exam.findById(examId);
-    if (!exam) {
-      return res.status(404).json({ success: false, message: "Exam not found" });
-    }
-    if (exam.status === 'Cancelled') {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot enter marks for a cancelled exam.",
-      });
-    }
-    if (!(exam.classes || []).some((id) => normalizeObjectId(id) === normalizeObjectId(classId))) {
-      return res.status(400).json({
-        success: false,
-        message: "Selected exam is not assigned to this class.",
-      });
-    }
-
-    const student = await Student.findById(studentId).select("currentClass");
-    if (!student) {
-      return res.status(404).json({ success: false, message: "Student not found" });
-    }
-    if (normalizeObjectId(student.currentClass) !== normalizeObjectId(classId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Student does not belong to the selected class.",
-      });
-    }
-
-    const marksEntry = await upsertStudentMarks({
-      studentId, examId, classId, academicYear, terminalNumber, subjectMarks, enteredBy,
+      ...(enteredBy ? { enteredBy } : {})
     });
 
     const populated = await Marks.findById(marksEntry._id)
       .populate('student', 'name studentId rollNumber')
       .populate('subjectMarks.subject', 'subjectName subjectCode');
 
-    res.status(200).json({
+    res.status(201).json({
       success: true,
-      message: "Marks saved successfully",
+      message: "Marks entered successfully",
       data: populated,
     });
   } catch (error) {
@@ -507,40 +556,16 @@ export let enterMarks = async (req, res) => {
   }
 };
 
-// Bulk enter marks for multiple students.
+// Bulk enter marks for multiple students (for efficiency)
 export let bulkEnterMarks = async (req, res) => {
   try {
     const { examId, classId, academicYear, terminalNumber, studentsMarks } = req.body;
     const enteredBy = getRequestTeacherId(req);
 
     if (!studentsMarks || studentsMarks.length === 0) {
-      return res.status(400).json({ success: false, message: "No student marks provided" });
-    }
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, classId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only enter marks for your class teacher classes.",
-        });
-      }
-    }
-
-    const exam = await Exam.findById(examId).select("classes status");
-    if (!exam) {
-      return res.status(404).json({ success: false, message: "Exam not found" });
-    }
-    if (exam.status === 'Cancelled') {
       return res.status(400).json({
         success: false,
-        message: "Cannot enter marks for a cancelled exam.",
-      });
-    }
-    if (!(exam.classes || []).some((id) => normalizeObjectId(id) === normalizeObjectId(classId))) {
-      return res.status(400).json({
-        success: false,
-        message: "Selected exam is not assigned to this class.",
+        message: "No student marks provided"
       });
     }
 
@@ -550,20 +575,94 @@ export let bulkEnterMarks = async (req, res) => {
     for (const studentData of studentsMarks) {
       try {
         const { studentId, subjectMarks } = studentData;
-        const student = await Student.findById(studentId).select("currentClass");
-        if (!student) throw new Error("Student not found");
-        if (normalizeObjectId(student.currentClass) !== normalizeObjectId(classId)) {
-          throw new Error("Student does not belong to the selected class");
-        }
-        const marksEntry = await upsertStudentMarks({
-          studentId, examId, classId, academicYear, terminalNumber, subjectMarks, enteredBy,
+
+        // Process marks for this student
+        let totalPossibleMarks = 0;
+        let totalObtainedMarks = 0;
+
+        const marksWithGrades = await Promise.all(
+          subjectMarks.map(async (sm) => {
+            const subject = await Subject.findById(sm.subject);
+            if (!subject) {
+              throw new Error(`Subject not found: ${sm.subject}`);
+            }
+
+            const obtainedTotal = calculateTotalMarks(
+              sm.writtenMarks || 0,
+              sm.practicalMarks || 0
+            );
+
+            const fullMarks = subject.fullMarks;
+            const passMarks = subject.passMarks;
+
+            totalPossibleMarks += fullMarks;
+            totalObtainedMarks += obtainedTotal;
+
+            const gradeData = sm.isAbsent
+              ? { percentage: 0, gradePoint: 0.0, gradeLetter: 'AB' }
+              : calculateGrade(obtainedTotal, fullMarks);
+
+            return {
+              subject: sm.subject,
+              writtenMarks: sm.writtenMarks || 0,
+              practicalMarks: sm.practicalMarks || 0,
+              totalMarks: fullMarks,
+              fullMarks,
+              passMarks,
+              obtainedMarks: obtainedTotal,
+              percentage: gradeData.percentage,
+              gradePoint: gradeData.gradePoint,
+              gradeLetter: gradeData.gradeLetter,
+              isAbsent: sm.isAbsent || false,
+              remarks: sm.remarks || ''
+            };
+          })
+        );
+
+        const overallPercentage = totalPossibleMarks > 0
+          ? (totalObtainedMarks / totalPossibleMarks) * 100
+          : 0;
+
+        const gpaData = calculateGPA(marksWithGrades);
+
+        const hasFailed = marksWithGrades.some(
+          m => !m.isAbsent && m.obtainedMarks < m.passMarks
+        );
+        const hasAbsent = marksWithGrades.some(m => m.isAbsent);
+        const result = hasFailed || hasAbsent ? 'Fail' : 'Pass';
+
+        // Upsert marks
+        const marksEntry = await Marks.findOneAndUpdate(
+          { student: studentId, exam: examId },
+          {
+            student: studentId,
+            exam: examId,
+            class: classId,
+            academicYear,
+            terminalNumber,
+            subjectMarks: marksWithGrades,
+            totalMarks: totalPossibleMarks,
+            totalObtained: totalObtainedMarks,
+            percentage: parseFloat(overallPercentage.toFixed(2)),
+            gpa: gpaData.gpa,
+            overallGrade: gpaData.grade,
+            result,
+            ...(enteredBy ? { enteredBy } : {})
+          },
+          { upsert: true, new: true, runValidators: true }
+        );
+
+        results.push({
+          studentId,
+          success: true,
+          marksId: marksEntry._id
         });
-        results.push({ studentId, success: true, marksId: marksEntry._id });
+
       } catch (error) {
         errors.push({
           studentId: studentData.studentId,
           success: false,
-          error: error.message,
+          error: error.message
         });
       }
     }
@@ -571,34 +670,12 @@ export let bulkEnterMarks = async (req, res) => {
     res.status(200).json({
       success: true,
       message: `Marks processed: ${results.length} successful, ${errors.length} failed`,
-      data: { successful: results, failed: errors },
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
-};
-
-// Delete a marks entry (e.g. to re-enter after a correction).
-export let deleteMarks = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const marks = await Marks.findById(id);
-    if (!marks) {
-      return res.status(404).json({ success: false, message: "Marks entry not found" });
-    }
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, marks.class);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only delete marks for your class teacher classes.",
-        });
+      data: {
+        successful: results,
+        failed: errors
       }
-    }
+    });
 
-    await marks.deleteOne();
-    res.status(200).json({ success: true, message: "Marks entry deleted" });
   } catch (error) {
     handleError(res, error);
   }
@@ -609,32 +686,12 @@ export let getStudentMarksheet = async (req, res) => {
   try {
     const { studentId, examId } = req.query;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view marksheets for students in your class teacher classes.",
-        });
-      }
-    }
-
-    if (req.user?.role === "Parent") {
-      const allowed = await canParentAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view marksheets for your children.",
-        });
-      }
-    }
-
     const marks = await Marks.findOne({
       student: studentId,
       exam: examId
     })
       .populate('student', 'name studentId rollNumber dateOfBirth gender')
-      .populate('exam', 'examName terminalNumber academicYear startDate')
+      .populate('exam', 'examName examType terminalNumber academicYear startDate')
       .populate('class', 'className')
       .populate('subjectMarks.subject', 'subjectName subjectCode creditHours');
 
@@ -643,16 +700,6 @@ export let getStudentMarksheet = async (req, res) => {
         success: false,
         message: "Marksheet not found"
       });
-    }
-
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, marks.class);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view marksheets for your class teacher classes.",
-        });
-      }
     }
 
     res.status(200).json({
@@ -669,42 +716,13 @@ export let getStudentMarksheet = async (req, res) => {
 export let getStudentTerminalMarks = async (req, res) => {
   try {
     const { studentId, academicYear, terminalNumber } = req.query;
-    let teacherScope = null;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view marks for students in your class teacher classes.",
-        });
-      }
-
-      teacherScope = await getTeacherScope(req);
-    }
-
-    if (req.user?.role === "Parent") {
-      const allowed = await canParentAccessStudent(req, studentId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view marks for your children.",
-        });
-      }
-    }
-
-    const marksQuery = {
+    const marks = await Marks.find({
       student: studentId,
       academicYear,
       terminalNumber: parseInt(terminalNumber)
-    };
-
-    if (teacherScope) {
-      marksQuery.class = { $in: teacherScope.classIds };
-    }
-
-    const marks = await Marks.find(marksQuery)
-      .populate('exam', 'examName terminalNumber')
+    })
+      .populate('exam', 'examName examType terminalNumber')
       .populate('class', 'className')
       .populate('subjectMarks.subject', 'subjectName subjectCode creditHours')
       .sort({ createdAt: -1 });
@@ -719,32 +737,28 @@ export let getStudentTerminalMarks = async (req, res) => {
   }
 };
 
-// Get class result — computes ranks on the fly (not persisted).
+// Get class result
 export let getClassResult = async (req, res) => {
   try {
     const { classId, examId } = req.query;
 
-    if (req.user?.role === "Teacher") {
-      const allowed = await canTeacherAccessClassId(req, classId);
-      if (!allowed) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only view results for your class teacher classes.",
-        });
-      }
-    }
-
-    const docs = await Marks.find({ class: classId, exam: examId })
+    const results = await Marks.find({
+      class: classId,
+      exam: examId
+    })
       .populate('student', 'name studentId rollNumber')
       .sort({ percentage: -1 });
 
-    const results = docs.map((doc, index) => ({
-      ...doc.toObject(),
-      rank: index + 1,
-    }));
+    // Calculate ranks
+    results.forEach((result, index) => {
+      result.rank = index + 1;
+    });
 
-    const passCount = results.filter((r) => r.result === 'Pass').length;
-    const failCount = results.filter((r) => r.result === 'Fail').length;
+    // Save ranks
+    await Promise.all(results.map(r => r.save()));
+
+    const passCount = results.filter(r => r.result === 'Pass').length;
+    const failCount = results.filter(r => r.result === 'Fail').length;
     const avgPercentage = results.length > 0
       ? results.reduce((sum, r) => sum + r.percentage, 0) / results.length
       : 0;
@@ -825,23 +839,6 @@ export let downloadExamNotice = async (req, res) => {
         success: false,
         message: "Exam not found"
       });
-    }
-
-    if (req.user?.role === "Teacher") {
-      const scope = await getTeacherScope(req);
-      if (!examTouchesAllowedClass(exam, scope.classIdSet)) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. You can only download notices for your class teacher classes.",
-        });
-      }
-
-      if (!examOnlyUsesAllowedClasses(exam, scope.classIdSet)) {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. This exam notice includes classes outside your class teacher scope.",
-        });
-      }
     }
 
     if (!exam.noticeGenerated || !exam.noticePdfUrl) {
