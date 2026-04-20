@@ -5,17 +5,18 @@ import {
   updateTeacherAttendance,
   markTeacherAttendance
 } from "../Controller/teacherAttendance.js";
+import { authorize } from "../Middleware/auth.js";
 
 let teacherAttendanceRouter = Router();
 
 teacherAttendanceRouter.route("/")
-  .get(getTeacherAttendance)
-  .post(createTeacherAttendance);
+  .get(authorize('Admin'), getTeacherAttendance)
+  .post(authorize('Admin'), createTeacherAttendance);
 
 teacherAttendanceRouter.route("/mark")
-  .patch(markTeacherAttendance);
+  .patch(authorize('Admin'), markTeacherAttendance);
 
 teacherAttendanceRouter.route("/:id")
-  .patch(updateTeacherAttendance);
+  .patch(authorize('Admin'), updateTeacherAttendance);
 
 export default teacherAttendanceRouter;

@@ -6,6 +6,7 @@ import {
   getClassMonthlyReport,
   getAbsentStudents
 } from "../Controller/attendance.js";
+import { authorize } from "../Middleware/auth.js";
 
 let attendanceRouter = Router();
 
@@ -43,7 +44,7 @@ let attendanceRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 attendanceRouter.route("/")
-  .post(markAttendance);
+  .post(authorize('Admin', 'Teacher'), markAttendance);
 
 /**
  * @swagger
@@ -66,7 +67,7 @@ attendanceRouter.route("/")
  *         schema:
  *           type: string
  *           format: date
- *         description: Date (YYYY-MM-DD)
+ *         description: BS date (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Attendance fetched successfully
@@ -78,7 +79,7 @@ attendanceRouter.route("/")
  *         $ref: '#/components/responses/Unauthorized'
  */
 attendanceRouter.route("/date")
-  .get(getAttendanceByDate);
+  .get(authorize('Admin', 'Teacher'), getAttendanceByDate);
 
 /**
  * @swagger
@@ -130,7 +131,7 @@ attendanceRouter.route("/date")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 attendanceRouter.route("/student-report")
-  .get(getStudentAttendanceReport);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getStudentAttendanceReport);
 
 /**
  * @swagger
@@ -189,7 +190,7 @@ attendanceRouter.route("/student-report")
  *         $ref: '#/components/responses/Unauthorized'
  */
 attendanceRouter.route("/monthly-report")
-  .get(getClassMonthlyReport);
+  .get(authorize('Admin', 'Teacher'), getClassMonthlyReport);
 
 /**
  * @swagger
@@ -213,7 +214,7 @@ attendanceRouter.route("/monthly-report")
  *         schema:
  *           type: string
  *           format: date
- *         description: Date (YYYY-MM-DD)
+ *         description: BS date (YYYY-MM-DD)
  *     responses:
  *       200:
  *         description: Absent students fetched successfully
@@ -243,6 +244,6 @@ attendanceRouter.route("/monthly-report")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 attendanceRouter.route("/absent")
-  .get(getAbsentStudents);
+  .get(authorize('Admin', 'Teacher'), getAbsentStudents);
 
 export default attendanceRouter;

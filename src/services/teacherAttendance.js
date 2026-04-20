@@ -1,14 +1,15 @@
 import { TeacherAttendance, Teacher } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
 import { getRequestUserId } from "../utils/requestUser.js";
+import {
+  getDayRangeFromInput,
+  normalizeDateFields,
+  parseDateInput,
+  parseDateInputForBoundary,
+} from "../utils/nepaliDate.js";
 
 const getDayRange = (dateStr) => {
-  const date = dateStr ? new Date(dateStr) : new Date();
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(date);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
+  return getDayRangeFromInput(dateStr || new Date());
 };
 
 // GET /api/teacher-attendance?date=&teacherId=&status=&from=&to=
@@ -21,12 +22,30 @@ export let getTeacherAttendance = async (req, res) => {
     if (status) query.status = status;
 
     if (from || to) {
-      const start = from ? new Date(from) : new Date('1970-01-01');
-      const end = to ? new Date(to) : new Date();
-      end.setHours(23, 59, 59, 999);
+      const start = from
+        ? parseDateInputForBoundary(from, { boundary: "start" })
+        : new Date('1970-01-01');
+      const end = to
+        ? parseDateInputForBoundary(to, { boundary: "end" })
+        : new Date();
+
+      if ((from && !start) || (to && !end)) {
+        return res.status(400).json({
+          success: false,
+          message: "Date range is invalid",
+        });
+      }
+
       query.date = { $gte: start, $lte: end };
     } else if (date) {
-      const { start, end } = getDayRange(date);
+      const dayRange = getDayRange(date);
+      if (!dayRange) {
+        return res.status(400).json({
+          success: false,
+          message: "Date is invalid",
+        });
+      }
+      const { start, end } = dayRange;
       query.date = { $gte: start, $lte: end };
     }
 
@@ -47,7 +66,7 @@ export let getTeacherAttendance = async (req, res) => {
 // POST /api/teacher-attendance (manual mark)
 export let createTeacherAttendance = async (req, res) => {
   try {
-    const { teacher, date, status, inTime, outTime, remarks, deviceName } = req.body;
+    const { teacher, date, status, remarks, deviceName } = req.body;
 
     if (!teacher || !date) {
       return res.status(400).json({
@@ -56,9 +75,19 @@ export let createTeacherAttendance = async (req, res) => {
       });
     }
 
+    const dayRange = getDayRange(date);
+    if (!dayRange) {
+      return res.status(400).json({
+        success: false,
+        message: "Date is invalid",
+      });
+    }
+
+    const payload = normalizeDateFields(req.body, ["date", "inTime", "outTime"]);
+
     const exists = await TeacherAttendance.findOne({
       teacher,
-      date: { $gte: new Date(date).setHours(0, 0, 0, 0), $lte: new Date(date).setHours(23, 59, 59, 999) }
+      date: { $gte: dayRange.start, $lte: dayRange.end }
     });
     if (exists) {
       return res.status(409).json({
@@ -69,10 +98,10 @@ export let createTeacherAttendance = async (req, res) => {
 
     const result = await TeacherAttendance.create({
       teacher,
-      date,
+      date: dayRange.start,
       status: status || 'Present',
-      inTime,
-      outTime,
+      inTime: payload.inTime,
+      outTime: payload.outTime,
       remarks,
       deviceName,
       markedBy: getRequestUserId(req)
@@ -91,9 +120,11 @@ export let createTeacherAttendance = async (req, res) => {
 // PATCH /api/teacher-attendance/:id (manual update)
 export let updateTeacherAttendance = async (req, res) => {
   try {
+    const updateData = normalizeDateFields(req.body, ["date", "inTime", "outTime"]);
+
     const result = await TeacherAttendance.findByIdAndUpdate(
       req.params.id,
-      { ...req.body, markedBy: getRequestUserId(req) },
+      { ...updateData, markedBy: getRequestUserId(req) },
       { new: true, runValidators: true }
     );
 
@@ -133,7 +164,15 @@ export let markTeacherAttendance = async (req, res) => {
       });
     }
 
-    const { start, end } = getDayRange(date);
+    const dayRange = getDayRange(date);
+    if (!dayRange) {
+      return res.status(400).json({
+        success: false,
+        message: "Date is invalid",
+      });
+    }
+    const { start, end } = dayRange;
+
     let record = await TeacherAttendance.findOne({
       teacher: teacherId,
       date: { $gte: start, $lte: end }
@@ -155,7 +194,14 @@ export let markTeacherAttendance = async (req, res) => {
           message: "In time already marked"
         });
       }
-      record.inTime = time ? new Date(time) : new Date();
+      const parsedInTime = time ? parseDateInput(time) : new Date();
+      if (!parsedInTime) {
+        return res.status(400).json({
+          success: false,
+          message: "In time is invalid",
+        });
+      }
+      record.inTime = parsedInTime;
     }
 
     if (type === 'out') {
@@ -165,7 +211,14 @@ export let markTeacherAttendance = async (req, res) => {
           message: "Out time already marked"
         });
       }
-      record.outTime = time ? new Date(time) : new Date();
+      const parsedOutTime = time ? parseDateInput(time) : new Date();
+      if (!parsedOutTime) {
+        return res.status(400).json({
+          success: false,
+          message: "Out time is invalid",
+        });
+      }
+      record.outTime = parsedOutTime;
     }
 
     if (deviceName) record.deviceName = deviceName;
