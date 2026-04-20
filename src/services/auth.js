@@ -8,11 +8,19 @@ import { handleError } from "../utils/errorHandler.js";
 export const register = async (req, res) => {
   try {
     const { phoneNumber, email, password, role, profile, profileModel } = req.body;
+    const allowedManualRoles = new Set(["SuperAdmin", "Admin"]);
 
     if (!phoneNumber) {
       return res.status(400).json({
         success: false,
         message: "Phone number is required",
+      });
+    }
+
+    if (!allowedManualRoles.has(role)) {
+      return res.status(400).json({
+        success: false,
+        message: "Teacher and Parent accounts must be provisioned from existing records by SuperAdmin.",
       });
     }
 
@@ -46,21 +54,9 @@ export const register = async (req, res) => {
       isActive: true,
     });
 
-    // Generate token
-    const token = jwt.sign(
-      {
-        id: user._id,
-        phoneNumber: user.phoneNumber,
-        email: user.email,
-        role: user.role,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-
     res.status(201).json({
       success: true,
-      message: "User registered successfully",
+      message: "User created successfully",
       data: {
         user: {
           id: user._id,
@@ -68,7 +64,6 @@ export const register = async (req, res) => {
           email: user.email,
           role: user.role,
         },
-        token,
       },
     });
   } catch (error) {
@@ -242,14 +237,21 @@ export const changePassword = async (req, res) => {
   }
 };
 
-// Get all users (Admin only)
+// Get all users (SuperAdmin only)
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, isActive } = req.query;
+    const { role, isActive, search } = req.query;
     let query = {};
 
     if (role) query.role = role;
     if (isActive !== undefined) query.isActive = isActive === "true";
+    if (search) {
+      query.$or = [
+        { email: { $regex: search, $options: "i" } },
+        { phoneNumber: { $regex: search, $options: "i" } },
+        { role: { $regex: search, $options: "i" } },
+      ];
+    }
 
     const users = await User.find(query)
       .select("-password")
@@ -265,7 +267,7 @@ export const getAllUsers = async (req, res) => {
   }
 };
 
-// Update user permissions (Admin only)
+// Update user permissions (SuperAdmin only)
 export const updateUserPermissions = async (req, res) => {
   try {
     const { userId, permissions } = req.body;
@@ -293,10 +295,17 @@ export const updateUserPermissions = async (req, res) => {
   }
 };
 
-// Deactivate/Activate user (Admin only)
+// Deactivate/Activate user (SuperAdmin only)
 export const toggleUserStatus = async (req, res) => {
   try {
     const { userId, isActive } = req.body;
+
+    if (req.user?.id?.toString() === String(userId) && isActive === false) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot deactivate your own account",
+      });
+    }
 
     const user = await User.findByIdAndUpdate(
       userId,

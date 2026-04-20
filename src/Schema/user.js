@@ -17,7 +17,7 @@ let userSchema = Schema({
   },
   role: {
     type: String,
-    enum: ['Admin', 'Teacher', 'Parent', 'Staff'],
+    enum: ['SuperAdmin', 'Admin', 'Teacher', 'Parent'],
     required: true,
     default: 'Parent'
   },
