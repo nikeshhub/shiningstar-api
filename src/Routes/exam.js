@@ -5,15 +5,16 @@ import {
   getExamById,
   updateExam,
   deleteExam,
-  triggerExamFeeGeneration,
   enterMarks,
   bulkEnterMarks,
+  deleteMarks,
   getStudentMarksheet,
   getStudentTerminalMarks,
   getClassResult,
   generateExamNotice,
   downloadExamNotice
 } from "../Controller/exam.js";
+import { authorize } from "../Middleware/auth.js";
 
 let examRouter = Router();
 
@@ -22,7 +23,8 @@ let examRouter = Router();
  * /api/exams:
  *   post:
  *     tags: [Exams]
- *     summary: Create a new exam
+ *     summary: Create a new terminal exam
+ *     description: Every exam is a terminal (1-4). On creation, terminal fees equal to class.monthlyFee × 3 are auto-charged to each student's family.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -33,11 +35,7 @@ let examRouter = Router();
  *             $ref: '#/components/schemas/ExamCreate'
  *     responses:
  *       201:
- *         description: Exam created successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
+ *         description: Exam created and fees charged
  *       400:
  *         $ref: '#/components/responses/ValidationError'
  *       401:
@@ -45,7 +43,7 @@ let examRouter = Router();
  *   get:
  *     tags: [Exams]
  *     summary: Get all exams
- *     description: Supports filtering by academicYear, examType, and status.
+ *     description: Supports filtering by academicYear, terminalNumber, and status.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -53,32 +51,25 @@ let examRouter = Router();
  *         name: academicYear
  *         schema:
  *           type: string
- *         description: Filter by academic year
  *       - in: query
- *         name: examType
+ *         name: terminalNumber
  *         schema:
- *           type: string
- *           enum: [Terminal, Final, Unit Test, Other]
- *         description: Filter by exam type
+ *           type: integer
+ *           enum: [1, 2, 3, 4]
  *       - in: query
  *         name: status
  *         schema:
  *           type: string
  *           enum: [Scheduled, Ongoing, Completed, Cancelled]
- *         description: Filter by status
  *     responses:
  *       200:
  *         description: Exams fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
  *       401:
  *         $ref: '#/components/responses/Unauthorized'
  */
 examRouter.route("/")
-  .post(createExam)
-  .get(getAllExams);
+  .post(authorize('Admin'), createExam)
+  .get(authorize('Admin', 'Teacher'), getAllExams);
 
 /**
  * @swagger
@@ -86,133 +77,66 @@ examRouter.route("/")
  *   get:
  *     tags: [Exams]
  *     summary: Get exam by ID
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Exam ObjectId
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Exam fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         $ref: '#/components/responses/NotFound'
+ *       200: { description: Exam fetched successfully }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *   put:
  *     tags: [Exams]
  *     summary: Update an exam
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Exam ObjectId
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/ExamCreate'
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Exam updated successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         $ref: '#/components/responses/NotFound'
+ *       200: { description: Exam updated successfully }
+ *       404: { $ref: '#/components/responses/NotFound' }
  *   delete:
  *     tags: [Exams]
  *     summary: Delete an exam
  *     description: Cannot delete an exam that already has marks entered.
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema:
- *           type: string
- *         description: Exam ObjectId
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Exam deleted successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         $ref: '#/components/responses/NotFound'
- *       409:
- *         description: Cannot delete exam with existing marks entries
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *       200: { description: Exam deleted successfully }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       409: { description: Cannot delete exam with existing marks entries }
  */
 examRouter.route("/:id")
-  .get(getExamById)
-  .put(updateExam)
-  .delete(deleteExam);
-
-// Manually trigger fee generation for an exam
-examRouter.route("/:id/generate-fees")
-  .post(triggerExamFeeGeneration);
+  .get(authorize('Admin', 'Teacher'), getExamById)
+  .put(authorize('Admin'), updateExam)
+  .delete(authorize('Admin'), deleteExam);
 
 /**
  * @swagger
  * /api/exams/marks/enter:
  *   post:
  *     tags: [Exams]
- *     summary: Enter marks for a student
- *     description: Calculates grades, GPA, percentage, and pass/fail result automatically. Creates or updates marks entry (one per student per exam).
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/EnterMarksRequest'
- *     responses:
- *       201:
- *         description: Marks entered successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       200:
- *         description: Marks updated successfully (existing entry)
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       400:
- *         $ref: '#/components/responses/ValidationError'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *     summary: Enter or update marks for a student
+ *     description: Upserts on (student, exam). Calculates grades, GPA, and pass/fail. Validates writtenMarks ≤ subject.writtenMarks and practicalMarks ≤ subject.practicalMarks.
+ *     security: [{ bearerAuth: [] }]
  */
 examRouter.route("/marks/enter")
-  .post(enterMarks);
+  .post(authorize('Admin', 'Teacher'), enterMarks);
 
 // Bulk enter marks for multiple students
 examRouter.route("/marks/bulk-enter")
-  .post(bulkEnterMarks);
+  .post(authorize('Admin', 'Teacher'), bulkEnterMarks);
+
+// Delete a single marks entry (e.g. after a data-entry mistake)
+examRouter.route("/marks/:id")
+  .delete(authorize('Admin', 'Teacher'), deleteMarks);
 
 /**
  * @swagger
@@ -220,43 +144,23 @@ examRouter.route("/marks/bulk-enter")
  *   get:
  *     tags: [Exams]
  *     summary: Get student marksheet for an exam
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: query
  *         name: studentId
  *         required: true
- *         schema:
- *           type: string
- *         description: Student ObjectId
+ *         schema: { type: string }
  *       - in: query
  *         name: examId
  *         required: true
- *         schema:
- *           type: string
- *         description: Exam ObjectId
- *     responses:
- *       200:
- *         description: Marksheet fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         description: Marksheet not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *         schema: { type: string }
  */
 examRouter.route("/marks/marksheet")
-  .get(getStudentMarksheet);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getStudentMarksheet);
 
 // Get student marks by terminal (for progress reports)
 examRouter.route("/marks/terminal")
-  .get(getStudentTerminalMarks);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getStudentTerminalMarks);
 
 /**
  * @swagger
@@ -265,62 +169,25 @@ examRouter.route("/marks/terminal")
  *     tags: [Exams]
  *     summary: Get class results for an exam
  *     description: Returns ranked results for all students in a class with pass/fail statistics.
- *     security:
- *       - bearerAuth: []
+ *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: query
  *         name: classId
  *         required: true
- *         schema:
- *           type: string
- *         description: Class ObjectId
+ *         schema: { type: string }
  *       - in: query
  *         name: examId
  *         required: true
- *         schema:
- *           type: string
- *         description: Exam ObjectId
- *     responses:
- *       200:
- *         description: Class result fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         results:
- *                           type: array
- *                           items:
- *                             type: object
- *                         statistics:
- *                           type: object
- *                           properties:
- *                             totalStudents:
- *                               type: integer
- *                             passed:
- *                               type: integer
- *                             failed:
- *                               type: integer
- *                             passPercentage:
- *                               type: string
- *                             averagePercentage:
- *                               type: string
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *         schema: { type: string }
  */
 examRouter.route("/marks/class-result")
-  .get(getClassResult);
+  .get(authorize('Admin', 'Teacher'), getClassResult);
 
 // Generate and download exam notice PDF
 examRouter.route("/:id/notice/generate")
-  .post(generateExamNotice);
+  .post(authorize('Admin'), generateExamNotice);
 
 examRouter.route("/:id/notice/download")
-  .get(downloadExamNotice);
+  .get(authorize('Admin', 'Teacher'), downloadExamNotice);
 
 export default examRouter;

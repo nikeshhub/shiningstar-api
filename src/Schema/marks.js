@@ -92,10 +92,8 @@ let marksSchema = Schema({
     default: 0
   },
   overallGrade: {
-    type: String
-  },
-  rank: {
-    type: Number
+    type: String,
+    enum: ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D', 'NG']
   },
   result: {
     type: String,

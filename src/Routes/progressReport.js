@@ -7,6 +7,7 @@ import {
   generateProgressReportPDFController,
   downloadProgressReportPDF
 } from "../Controller/progressReport.js";
+import { authorize } from "../Middleware/auth.js";
 
 let progressReportRouter = Router();
 
@@ -48,7 +49,7 @@ let progressReportRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 progressReportRouter.route("/generate")
-  .post(generateProgressReport);
+  .post(authorize('Admin', 'Teacher'), generateProgressReport);
 
 /**
  * @swagger
@@ -86,7 +87,7 @@ progressReportRouter.route("/generate")
  *         $ref: '#/components/responses/Unauthorized'
  */
 progressReportRouter.route("/bulk-generate")
-  .post(bulkGenerateProgressReports);
+  .post(authorize('Admin', 'Teacher'), bulkGenerateProgressReports);
 
 /**
  * @swagger
@@ -126,7 +127,7 @@ progressReportRouter.route("/bulk-generate")
  *         $ref: '#/components/responses/Unauthorized'
  */
 progressReportRouter.route("/")
-  .get(getProgressReport);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getProgressReport);
 
 /**
  * @swagger
@@ -160,13 +161,13 @@ progressReportRouter.route("/")
  *         $ref: '#/components/responses/Unauthorized'
  */
 progressReportRouter.route("/class")
-  .get(getClassProgressReports);
+  .get(authorize('Admin', 'Teacher'), getClassProgressReports);
 
 // Generate and download progress report PDF
 progressReportRouter.route("/pdf/generate")
-  .get(generateProgressReportPDFController);
+  .get(authorize('Admin', 'Teacher', 'Parent'), generateProgressReportPDFController);
 
 progressReportRouter.route("/pdf/download")
-  .get(downloadProgressReportPDF);
+  .get(authorize('Admin', 'Teacher', 'Parent'), downloadProgressReportPDF);
 
 export default progressReportRouter;
