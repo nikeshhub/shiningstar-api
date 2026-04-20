@@ -2,6 +2,12 @@ import { Class, Student, Subject } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
 import { withFamilyContactList } from "../utils/studentFamily.js";
 import mongoose from "mongoose";
+import {
+  canParentAccessClassId,
+  canTeacherAccessClassId,
+  getParentScope,
+  getTeacherScope,
+} from "../utils/accessScope.js";
 
 // Create class
 export let createClass = async (req, res) => {
@@ -64,6 +70,16 @@ export let getAllClasses = async (req, res) => {
 
     if (status) query.status = status;
 
+    if (req.user?.role === "Teacher") {
+      const scope = await getTeacherScope(req);
+      query._id = { $in: scope.classIds };
+    }
+
+    if (req.user?.role === "Parent") {
+      const scope = await getParentScope(req);
+      query._id = { $in: scope.classIds };
+    }
+
     const result = await Class.find(query)
       .populate('classTeacher', 'name email phone')
       .populate('subjects.subject', 'subjectName subjectCode subjectType creditHours')
@@ -71,10 +87,18 @@ export let getAllClasses = async (req, res) => {
       .populate('timetable.teacher', 'name')
       .sort({ className: 1 });
 
+    const data = req.user?.role === "Admin"
+      ? result
+      : result.map((classDoc) => {
+          const classData = classDoc.toObject();
+          delete classData.monthlyFee;
+          return classData;
+        });
+
     res.status(200).json({
       success: true,
       message: "Classes fetched successfully",
-      data: result,
+      data,
     });
   } catch (error) {
     handleError(res, error);
@@ -84,6 +108,26 @@ export let getAllClasses = async (req, res) => {
 // Get class by ID
 export let getClassById = async (req, res) => {
   try {
+    if (req.user?.role === "Teacher") {
+      const allowed = await canTeacherAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view your class teacher classes.",
+        });
+      }
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view classes linked to your children.",
+        });
+      }
+    }
+
     const result = await Class.findById(req.params.id)
       .populate('classTeacher', 'name email phone qualification gender status')
       .populate('subjects.subject', 'subjectName subjectCode subjectType creditHours writtenMarks practicalMarks fullMarks passMarks')
@@ -97,20 +141,34 @@ export let getClassById = async (req, res) => {
       });
     }
 
-    // Get enrolled students with details
-    const students = await Student.find({
+    const studentsQuery = {
       currentClass: req.params.id,
       status: 'Active'
-    }).select('studentId name gender rollNumber family feeBalance status')
+    };
+
+    if (req.user?.role === "Parent") {
+      const scope = await getParentScope(req);
+      studentsQuery.family = scope.familyId;
+    }
+
+    // Get enrolled students with details. Parent requests are limited to their own children.
+    const students = await Student.find(studentsQuery).select('studentId name gender rollNumber family status')
       .populate('family')
       .sort({ rollNumber: 1, name: 1 });
 
-    const enrolledStudents = withFamilyContactList(students);
+    const enrolledStudents = withFamilyContactList(students, {
+      includeFamilyFeeBalance: req.user?.role !== "Teacher",
+    });
 
     const classData = result.toObject();
     classData.enrolledStudents = enrolledStudents;
     classData.studentCount = enrolledStudents.length;
     classData.totalMonthlyRevenue = classData.monthlyFee * enrolledStudents.length;
+
+    if (req.user?.role !== "Admin") {
+      delete classData.monthlyFee;
+      delete classData.totalMonthlyRevenue;
+    }
 
     res.status(200).json({
       success: true,
@@ -224,17 +282,46 @@ export let deleteClass = async (req, res) => {
 // Get students in a class
 export let getClassStudents = async (req, res) => {
   try {
-    const students = await Student.find({
+    if (req.user?.role === "Teacher") {
+      const allowed = await canTeacherAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your class teacher classes.",
+        });
+      }
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your children's classes.",
+        });
+      }
+    }
+
+    const studentsQuery = {
       currentClass: req.params.id,
       status: 'Active'
-    })
+    };
+
+    if (req.user?.role === "Parent") {
+      const scope = await getParentScope(req);
+      studentsQuery.family = scope.familyId;
+    }
+
+    const students = await Student.find(studentsQuery)
       .populate('family')
       .sort({ rollNumber: 1, name: 1 });
 
     res.status(200).json({
       success: true,
       message: "Students fetched successfully",
-      data: withFamilyContactList(students),
+      data: withFamilyContactList(students, {
+        includeFamilyFeeBalance: req.user?.role !== "Teacher",
+      }),
     });
   } catch (error) {
     handleError(res, error);
@@ -244,6 +331,26 @@ export let getClassStudents = async (req, res) => {
 // Get timetable for a class
 export let getTimetable = async (req, res) => {
   try {
+    if (req.user?.role === "Teacher") {
+      const allowed = await canTeacherAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view timetable for your class teacher classes.",
+        });
+      }
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessClassId(req, req.params.id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view timetable for your children's classes.",
+        });
+      }
+    }
+
     const classDoc = await Class.findById(req.params.id)
       .populate('timetable.subject', 'subjectName subjectCode')
       .populate('timetable.teacher', 'name');

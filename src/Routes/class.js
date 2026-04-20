@@ -83,7 +83,7 @@ let classRouter = Router();
  */
 classRouter.route("/")
   .post(authorize('Admin'), createClass)
-  .get(authorize('Admin', 'Teacher'), getAllClasses);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getAllClasses);
 
 /**
  * @swagger
@@ -184,7 +184,7 @@ classRouter.route("/")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 classRouter.route("/:id")
-  .get(authorize('Admin', 'Teacher'), getClassById)
+  .get(authorize('Admin', 'Teacher', 'Parent'), getClassById)
   .put(authorize('Admin'), updateClass)
   .delete(authorize('Admin'), deleteClass);
 
@@ -221,7 +221,7 @@ classRouter.route("/:id")
  *         $ref: '#/components/responses/Unauthorized'
  */
 classRouter.route("/:id/students")
-  .get(authorize('Admin', 'Teacher'), getClassStudents);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getClassStudents);
 
 /**
  * @swagger
@@ -296,7 +296,7 @@ classRouter.route("/:id/students")
  *         $ref: '#/components/responses/NotFound'
  */
 classRouter.route("/:id/timetable")
-  .get(authorize('Admin', 'Teacher'), getTimetable)
+  .get(authorize('Admin', 'Teacher', 'Parent'), getTimetable)
   .put(authorize('Admin'), setTimetable);
 
 // Update book details for a subject in a class

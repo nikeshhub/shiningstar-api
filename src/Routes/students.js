@@ -96,8 +96,8 @@ let studentRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 studentRouter.route("/")
-  .post(authorize('Admin', 'Teacher'), uploadStudentDocuments, createStudent)
-  .get(authorize('Admin', 'Teacher'), readAllStudents);
+  .post(authorize('Admin'), uploadStudentDocuments, createStudent)
+  .get(authorize('Admin', 'Teacher', 'Parent'), readAllStudents);
 
 /**
  * @swagger
@@ -237,8 +237,8 @@ studentRouter.route("/promote")
  *         $ref: '#/components/responses/NotFound'
  */
 studentRouter.route("/:id")
-  .get(authorize('Admin', 'Teacher'), getStudentById)
-  .put(authorize('Admin', 'Teacher'), uploadStudentDocuments, updateStudent)
+  .get(authorize('Admin', 'Teacher', 'Parent'), getStudentById)
+  .put(authorize('Admin'), uploadStudentDocuments, updateStudent)
   .delete(authorize('Admin'), deleteStudent);
 
 /**
@@ -294,7 +294,7 @@ studentRouter.route("/:id")
  *         $ref: '#/components/responses/NotFound'
  */
 studentRouter.route("/:id/history")
-  .get(authorize('Admin', 'Teacher'), getEnrollmentHistory);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getEnrollmentHistory);
 
 /**
  * @swagger
@@ -343,6 +343,6 @@ studentRouter.route("/:id/history")
  *         $ref: '#/components/responses/NotFound'
  */
 studentRouter.route("/:id/gps")
-  .put(authorize('Admin', 'Teacher', 'Parent'), updateGPSLocation);
+  .put(authorize('Admin', 'Parent'), updateGPSLocation);
 
 export default studentRouter;

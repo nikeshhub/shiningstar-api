@@ -13,8 +13,14 @@ import {
   Student,
 } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
+import { normalizeDateFields } from "../utils/nepaliDate.js";
 import { withFamilyContact, withFamilyContactList } from "../utils/studentFamily.js";
-import { getRequestFamilyId } from "../utils/requestUser.js";
+import {
+  canParentAccessStudent,
+  canTeacherAccessStudent,
+  getParentScope,
+  getTeacherScope,
+} from "../utils/accessScope.js";
 
 const STUDENT_ID_SEQUENCE_KEY = "studentId";
 const STUDENT_ID_PREFIX = "STU";
@@ -293,6 +299,11 @@ export let createStudent = async (req, res) => {
       );
     }
 
+    Object.assign(
+      data,
+      normalizeDateFields(data, ["dateOfBirth", "admissionDate", "idCardIssuedDate"])
+    );
+
     // Force status to Active on creation
     data.status = 'Active';
     Object.assign(data, uploadedData);
@@ -335,7 +346,34 @@ export let readAllStudents = async (req, res) => {
     const { class: classId, status, search } = req.query;
     let query = {};
 
-    if (classId) query.currentClass = classId;
+    if (req.user?.role === "Teacher") {
+      const scope = await getTeacherScope(req);
+
+      if (classId && !scope.classIdSet.has(classId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your class teacher classes.",
+        });
+      }
+
+      query.currentClass = classId || { $in: scope.classIds };
+    } else if (classId) {
+      query.currentClass = classId;
+    }
+
+    if (req.user?.role === "Parent") {
+      const scope = await getParentScope(req);
+
+      if (classId && !scope.classIdSet.has(classId)) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your family.",
+        });
+      }
+
+      query.family = scope.familyId;
+    }
+
     if (status) query.status = status;
     if (search) {
       const familyMatches = await Family.find({
@@ -363,10 +401,12 @@ export let readAllStudents = async (req, res) => {
       .populate('family')
       .sort({ name: 1 });
 
+    const includeFamilyFeeBalance = req.user?.role !== "Teacher";
+
     res.status(200).json({
       success: true,
       message: "Students fetched successfully",
-      data: withFamilyContactList(result),
+      data: withFamilyContactList(result, { includeFamilyFeeBalance }),
     });
   } catch (error) {
     handleError(res, error);
@@ -390,10 +430,32 @@ export let getStudentById = async (req, res) => {
       });
     }
 
+    if (req.user?.role === "Teacher") {
+      const allowed = await canTeacherAccessStudent(req, result);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your class teacher classes.",
+        });
+      }
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessStudent(req, result);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your family.",
+        });
+      }
+    }
+
+    const includeFamilyFeeBalance = req.user?.role !== "Teacher";
+
     res.status(200).json({
       success: true,
       message: "Student fetched successfully",
-      data: withFamilyContact(result),
+      data: withFamilyContact(result, { includeFamilyFeeBalance }),
     });
   } catch (error) {
     handleError(res, error);
@@ -436,6 +498,11 @@ export let updateStudent = async (req, res) => {
     if (Object.keys(data).length === 0) {
       return respondAndCleanup(res, 400, "No valid student fields provided", uploadedUrls);
     }
+
+    Object.assign(
+      data,
+      normalizeDateFields(data, ["dateOfBirth", "admissionDate", "idCardIssuedDate"])
+    );
 
     const referenceValidation = await validateStudentReferences(data);
     if (referenceValidation) {
@@ -622,6 +689,26 @@ export let getEnrollmentHistory = async (req, res) => {
       });
     }
 
+    if (req.user?.role === "Teacher") {
+      const allowed = await canTeacherAccessStudent(req, student);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your class teacher classes.",
+        });
+      }
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessStudent(req, student);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view students in your family.",
+        });
+      }
+    }
+
     // Build timeline: history entries + current enrollment
     const history = (student.enrollmentHistory || []).map(h => ({
       class: h.class?.className || 'Unknown',
@@ -684,8 +771,8 @@ export let updateGPSLocation = async (req, res) => {
     }
 
     if (req.user?.role === "Parent") {
-      const requestFamilyId = getRequestFamilyId(req);
-      if (!requestFamilyId || student.family?.toString() !== requestFamilyId.toString()) {
+      const allowed = await canParentAccessStudent(req, student);
+      if (!allowed) {
         return res.status(403).json({
           success: false,
           message: "Access denied. You can only update GPS for students in your family.",

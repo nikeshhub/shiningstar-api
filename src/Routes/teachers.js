@@ -84,7 +84,7 @@ let teacherRouter = Router();
  */
 teacherRouter.route("/")
   .post(authorize('Admin'), createTeacher)
-  .get(authorize('Admin', 'Teacher'), getAllTeachers);
+  .get(authorize('Admin'), getAllTeachers);
 
 /**
  * @swagger

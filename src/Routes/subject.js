@@ -6,6 +6,7 @@ import {
   updateSubject,
   deleteSubject
 } from "../Controller/subject.js";
+import { authorize } from "../Middleware/auth.js";
 
 let subjectRouter = Router();
 
@@ -75,8 +76,8 @@ let subjectRouter = Router();
  *         $ref: '#/components/responses/Unauthorized'
  */
 subjectRouter.route("/")
-  .post(createSubject)
-  .get(getAllSubjects);
+  .post(authorize('Admin'), createSubject)
+  .get(authorize('Admin', 'Teacher', 'Parent'), getAllSubjects);
 
 /**
  * @swagger
@@ -176,8 +177,8 @@ subjectRouter.route("/")
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 subjectRouter.route("/:id")
-  .get(getSubjectById)
-  .put(updateSubject)
-  .delete(deleteSubject);
+  .get(authorize('Admin', 'Teacher', 'Parent'), getSubjectById)
+  .put(authorize('Admin'), updateSubject)
+  .delete(authorize('Admin'), deleteSubject);
 
 export default subjectRouter;

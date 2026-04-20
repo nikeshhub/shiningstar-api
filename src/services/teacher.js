@@ -1,10 +1,12 @@
 import { Teacher, Class, Timetable, TeacherAttendance } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
+import { normalizeDateFields } from "../utils/nepaliDate.js";
+import { getRequestTeacherId } from "../utils/requestUser.js";
 
 // Create teacher
 export let createTeacher = async (req, res) => {
   try {
-    let data = req.body;
+    let data = normalizeDateFields(req.body, ["dateOfBirth", "joinDate"]);
 
     // Force status to Active on creation — frontend should not control this
     data.status = 'Active';
@@ -58,6 +60,16 @@ export let getAllTeachers = async (req, res) => {
 // Get teacher by ID
 export let getTeacherById = async (req, res) => {
   try {
+    if (req.user?.role === "Teacher") {
+      const requestTeacherId = getRequestTeacherId(req);
+      if (!requestTeacherId || requestTeacherId.toString() !== req.params.id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view your own teacher profile.",
+        });
+      }
+    }
+
     const result = await Teacher.findById(req.params.id)
       .populate('subjects', 'subjectName subjectCode')
       .populate('assignedClasses.class', 'className')
@@ -91,9 +103,11 @@ export let getTeacherById = async (req, res) => {
 // Update teacher
 export let updateTeacher = async (req, res) => {
   try {
+    const updateData = normalizeDateFields(req.body, ["dateOfBirth", "joinDate"]);
+
     const result = await Teacher.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       { new: true, runValidators: true }
     ).populate('subjects', 'subjectName subjectCode');
 
