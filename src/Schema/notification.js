@@ -1,17 +1,8 @@
 import { Schema } from "mongoose";
 
 let notificationSchema = Schema({
-  title: {
-    type: String,
-    required: true
-  },
   message: {
     type: String,
-    required: true
-  },
-  notificationType: {
-    type: String,
-    enum: ['Fee Reminder', 'Result Published', 'Holiday', 'Event', 'Exam Schedule', 'General', 'Attendance Alert'],
     required: true
   },
   targetAudience: {
@@ -36,7 +27,7 @@ let notificationSchema = Schema({
   },
   sendPushNotification: {
     type: Boolean,
-    default: true
+    default: false
   },
   sendEmail: {
     type: Boolean,
@@ -45,7 +36,7 @@ let notificationSchema = Schema({
   // Status
   status: {
     type: String,
-    enum: ['Draft', 'Scheduled', 'Sent', 'Failed'],
+    enum: ['Draft', 'Scheduled', 'Processing', 'Sent', 'Failed'],
     default: 'Draft'
   },
   scheduledDate: {
@@ -66,6 +57,10 @@ let notificationSchema = Schema({
     type: Number,
     default: 0
   },
+  lastError: {
+    type: String,
+    default: null
+  },
   createdBy: {
     type: Schema.Types.ObjectId,
     ref: 'User'
@@ -73,5 +68,7 @@ let notificationSchema = Schema({
 }, {
   timestamps: true
 });
+
+notificationSchema.index({ status: 1, scheduledDate: 1 });
 
 export default notificationSchema;

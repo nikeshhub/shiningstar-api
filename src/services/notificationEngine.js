@@ -1,5 +1,7 @@
 import { isValidObjectId } from "mongoose";
 import { Class, Notification, Student } from "../Model/model.js";
+import { parseDateInput } from "../utils/nepaliDate.js";
+import { sendEmail } from "./emailService.js";
 import { sendSms } from "./smsService.js";
 import {
   dedupeStudentsByFamily,
@@ -46,8 +48,8 @@ const parseScheduledDate = (value) => {
     return null;
   }
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseDateInput(value);
+  if (!parsed || Number.isNaN(parsed.getTime())) {
     throw createHttpError(400, "Scheduled date is invalid");
   }
 
@@ -149,6 +151,7 @@ const deliverToRecipient = async (notification, recipient) => {
   const primaryContact = recipient.family?.primaryContact;
   const secondaryContact = recipient.family?.secondaryContact;
   const recipientPhone = primaryContact?.mobile || secondaryContact?.mobile || "";
+  const recipientEmail = primaryContact?.email || secondaryContact?.email || "";
 
   if (notification.sendSMS) {
     try {
@@ -163,7 +166,16 @@ const deliverToRecipient = async (notification, recipient) => {
   }
 
   if (notification.sendEmail) {
-    deliveryErrors.push("Email delivery is not configured");
+    try {
+      await sendEmail({
+        to: recipientEmail,
+        subject: "Shining Star Notification",
+        text: notification.message,
+      });
+      delivered = true;
+    } catch (error) {
+      deliveryErrors.push(`Email: ${error.message}`);
+    }
   }
 
   if (notification.sendPushNotification) {
