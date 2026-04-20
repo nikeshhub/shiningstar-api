@@ -5,7 +5,40 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/shining-star';
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/shining-star';
+
+const getRequiredEnv = (name) => {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+};
+
+const seedCredentials = {
+  superAdmin: {
+    phoneNumber: getRequiredEnv('SEED_SUPERADMIN_PHONE'),
+    email: getRequiredEnv('SEED_SUPERADMIN_EMAIL'),
+    password: getRequiredEnv('SEED_SUPERADMIN_PASSWORD'),
+  },
+  admin: {
+    phoneNumber: getRequiredEnv('SEED_ADMIN_PHONE'),
+    email: getRequiredEnv('SEED_ADMIN_EMAIL'),
+    password: getRequiredEnv('SEED_ADMIN_PASSWORD'),
+  },
+  parent1: {
+    phoneNumber: getRequiredEnv('SEED_PARENT1_PHONE'),
+    email: getRequiredEnv('SEED_PARENT1_EMAIL'),
+    password: getRequiredEnv('SEED_PARENT1_PASSWORD'),
+  },
+  parent2: {
+    phoneNumber: getRequiredEnv('SEED_PARENT2_PHONE'),
+    email: getRequiredEnv('SEED_PARENT2_EMAIL'),
+    password: getRequiredEnv('SEED_PARENT2_PASSWORD'),
+  },
+};
 
 async function setupFreshDatabase() {
   try {
@@ -15,19 +48,31 @@ async function setupFreshDatabase() {
     await mongoose.connect(MONGO_URI);
     console.log('✅ Connected to MongoDB\n');
 
-    // 1. Create Admin User
+    // 1. Create SuperAdmin user
+    console.log('👤 Creating SuperAdmin user...');
+    const superAdminPassword = await bcrypt.hash(seedCredentials.superAdmin.password, 10);
+    await User.create({
+      phoneNumber: seedCredentials.superAdmin.phoneNumber,
+      email: seedCredentials.superAdmin.email,
+      password: superAdminPassword,
+      role: 'SuperAdmin',
+      isActive: true,
+    });
+    console.log(`✅ SuperAdmin created (Phone: ${seedCredentials.superAdmin.phoneNumber}, Email: ${seedCredentials.superAdmin.email}, Password: loaded from env)\n`);
+
+    // 2. Create Admin user
     console.log('👤 Creating Admin user...');
-    const adminPassword = await bcrypt.hash('admin123', 10);
-    const admin = await User.create({
-      phoneNumber: '9841234567',
-      email: 'admin@shiningstar.com',
+    const adminPassword = await bcrypt.hash(seedCredentials.admin.password, 10);
+    await User.create({
+      phoneNumber: seedCredentials.admin.phoneNumber,
+      email: seedCredentials.admin.email,
       password: adminPassword,
       role: 'Admin',
       isActive: true,
     });
-    console.log('✅ Admin created (Phone: 9841234567, Password: admin123)\n');
+    console.log(`✅ Admin created (Phone: ${seedCredentials.admin.phoneNumber}, Email: ${seedCredentials.admin.email}, Password: loaded from env)\n`);
 
-    // 2. Create Sample Subjects
+    // 3. Create Sample Subjects
     console.log('📚 Creating sample subjects...');
     const mathSubject = await Subject.create({
       subjectId: 'SUB001',
@@ -51,7 +96,7 @@ async function setupFreshDatabase() {
     });
     console.log('✅ Subjects created\n');
 
-    // 3. Create Sample Class
+    // 4. Create Sample Class
     console.log('🏫 Creating sample class...');
     const sampleClass = await Class.create({
       className: 'Class 5',
@@ -67,15 +112,15 @@ async function setupFreshDatabase() {
     });
     console.log('✅ Class 5-A created\n');
 
-    // 4. Create Sample Family with Parent User
+    // 5. Create Sample Family with Parent User
     console.log('👨‍👩‍👧 Creating sample family...');
     const sampleFamily = await Family.create({
       familyId: 'FAM0001',
       primaryContact: {
         name: 'Ram Bahadur Sharma',
         relation: 'Father',
-        mobile: '9851234567',
-        email: 'ram.sharma@example.com',
+        mobile: seedCredentials.parent1.phoneNumber,
+        email: seedCredentials.parent1.email,
       },
       secondaryContact: {
         name: 'Sita Sharma',
@@ -89,10 +134,10 @@ async function setupFreshDatabase() {
 
     // Create Parent User for the family
     console.log('👤 Creating parent user account...');
-    const parentPassword = await bcrypt.hash('9851234567', 10); // Phone as default password
+    const parentPassword = await bcrypt.hash(seedCredentials.parent1.password, 10);
     const parentUser = await User.create({
-      phoneNumber: '9851234567',
-      email: 'ram.sharma@example.com',
+      phoneNumber: seedCredentials.parent1.phoneNumber,
+      email: seedCredentials.parent1.email,
       password: parentPassword,
       role: 'Parent',
       profile: sampleFamily._id,
@@ -103,9 +148,9 @@ async function setupFreshDatabase() {
     // Link user to family
     sampleFamily.user = parentUser._id;
     await sampleFamily.save();
-    console.log('✅ Parent user created (Phone: 9851234567, Password: 9851234567)\n');
+    console.log(`✅ Parent user created (Phone: ${seedCredentials.parent1.phoneNumber}, Email: ${seedCredentials.parent1.email}, Password: loaded from env)\n`);
 
-    // 5. Create Sample Students
+    // 6. Create Sample Students
     console.log('👦 Creating sample students...');
     const student1 = await Student.create({
       studentId: 'STU00001',
@@ -134,15 +179,15 @@ async function setupFreshDatabase() {
     });
     console.log('✅ 2 students created (siblings in same family)\n');
 
-    // 6. Create Another Family (Single Child)
+    // 7. Create Another Family (Single Child)
     console.log('👨‍👧 Creating another family...');
     const family2 = await Family.create({
       familyId: 'FAM0002',
       primaryContact: {
         name: 'Krishna Thapa',
         relation: 'Father',
-        mobile: '9801234567',
-        email: 'krishna.thapa@example.com',
+        mobile: seedCredentials.parent2.phoneNumber,
+        email: seedCredentials.parent2.email,
       },
       secondaryContact: {
         name: 'Gita Thapa',
@@ -153,10 +198,10 @@ async function setupFreshDatabase() {
       status: 'Active',
     });
 
-    const parent2Password = await bcrypt.hash('9801234567', 10);
+    const parent2Password = await bcrypt.hash(seedCredentials.parent2.password, 10);
     const parentUser2 = await User.create({
-      phoneNumber: '9801234567',
-      email: 'krishna.thapa@example.com',
+      phoneNumber: seedCredentials.parent2.phoneNumber,
+      email: seedCredentials.parent2.email,
       password: parent2Password,
       role: 'Parent',
       profile: family2._id,
@@ -184,6 +229,7 @@ async function setupFreshDatabase() {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('🎉 Database setup completed successfully!\n');
     console.log('📋 Summary:');
+    console.log('   👤 1 SuperAdmin user');
     console.log('   👤 1 Admin user');
     console.log('   👥 2 Parent users');
     console.log('   👨‍👩‍👧‍👦 2 Families');
@@ -191,16 +237,19 @@ async function setupFreshDatabase() {
     console.log('   🏫 1 Class');
     console.log('   📚 3 Subjects\n');
     console.log('🔐 Login Credentials:\n');
+    console.log('   SuperAdmin:');
+    console.log(`   - Phone/Email: ${seedCredentials.superAdmin.phoneNumber} or ${seedCredentials.superAdmin.email}`);
+    console.log('   - Password: loaded from env\n');
     console.log('   Admin:');
-    console.log('   - Phone/Email: 9841234567 or admin@shiningstar.com');
-    console.log('   - Password: admin123\n');
+    console.log(`   - Phone/Email: ${seedCredentials.admin.phoneNumber} or ${seedCredentials.admin.email}`);
+    console.log('   - Password: loaded from env\n');
     console.log('   Parent 1 (Sharma Family):');
-    console.log('   - Phone: 9851234567');
-    console.log('   - Password: 9851234567');
+    console.log(`   - Phone/Email: ${seedCredentials.parent1.phoneNumber} or ${seedCredentials.parent1.email}`);
+    console.log('   - Password: loaded from env');
     console.log('   - Children: Rahul & Priya Sharma\n');
     console.log('   Parent 2 (Thapa Family):');
-    console.log('   - Phone: 9801234567');
-    console.log('   - Password: 9801234567');
+    console.log(`   - Phone/Email: ${seedCredentials.parent2.phoneNumber} or ${seedCredentials.parent2.email}`);
+    console.log('   - Password: loaded from env');
     console.log('   - Children: Anjali Thapa\n');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
