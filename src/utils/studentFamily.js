@@ -23,7 +23,22 @@ const pickContact = (family) => {
   };
 };
 
-export const withFamilyContact = (studentDoc) => {
+const trimFamilyForStudentPayload = (family, { includeFamilyFeeBalance = true } = {}) => {
+  if (!family) {
+    return family;
+  }
+
+  const familyData =
+    typeof family?.toObject === "function" ? family.toObject() : { ...family };
+
+  if (!includeFamilyFeeBalance) {
+    delete familyData.familyFeeBalance;
+  }
+
+  return familyData;
+};
+
+export const withFamilyContact = (studentDoc, options = {}) => {
   const student =
     typeof studentDoc?.toObject === "function" ? studentDoc.toObject() : studentDoc;
 
@@ -33,9 +48,10 @@ export const withFamilyContact = (studentDoc) => {
 
   return {
     ...student,
+    family: trimFamilyForStudentPayload(student.family, options),
     ...pickContact(student.family),
   };
 };
 
-export const withFamilyContactList = (students = []) =>
-  students.map(withFamilyContact);
+export const withFamilyContactList = (students = [], options = {}) =>
+  students.map((student) => withFamilyContact(student, options));

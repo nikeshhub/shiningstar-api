@@ -1,7 +1,7 @@
-import { Family, Student, User } from "../Model/model.js";
+import { Family, Student } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
-import bcrypt from "bcryptjs";
 import { isValidObjectId } from "mongoose";
+import { canParentAccessFamilyId, getParentScope } from "../utils/accessScope.js";
 
 const validateReferenceId = async (value, Model, label) => {
   if (!value) {
@@ -50,42 +50,7 @@ export let createFamily = async (req, res) => {
       data.status = 'Active';
     }
 
-    // Create the family first
     const family = await Family.create(data);
-
-    // Auto-create parent user account
-    try {
-      // Check if user already exists with this phone number
-      const existingUser = await User.findOne({ phoneNumber: data.primaryContact.mobile });
-
-      if (!existingUser) {
-        // Default password is phone number (parent should change after first login)
-        const defaultPassword = data.primaryContact.mobile;
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(defaultPassword, salt);
-
-        const parentUser = await User.create({
-          phoneNumber: data.primaryContact.mobile,
-          email: data.primaryContact.email || undefined,
-          password: hashedPassword,
-          role: 'Parent',
-          profile: family._id,
-          profileModel: 'Family',
-          isActive: true,
-        });
-
-        // Link user to family
-        family.user = parentUser._id;
-        await family.save();
-
-        console.log(`✅ Parent user created for family ${family.familyId} - Phone: ${data.primaryContact.mobile}`);
-      } else {
-        console.log(`ℹ️  User already exists for phone ${data.primaryContact.mobile}`);
-      }
-    } catch (userError) {
-      // Don't fail family creation if user creation fails
-      console.error('⚠️  Error creating parent user:', userError.message);
-    }
 
     res.status(201).json({
       success: true,
@@ -103,6 +68,11 @@ export let getAllFamilies = async (req, res) => {
     const { status } = req.query;
     let query = {};
     if (status) query.status = status;
+
+     if (req.user?.role === "Parent") {
+      const scope = await getParentScope(req);
+      query._id = scope.familyId;
+    }
 
     const families = await Family.find(query).sort({ createdAt: -1 });
 
@@ -136,6 +106,17 @@ export let getAllFamilies = async (req, res) => {
 export let getFamilyById = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessFamilyId(req, id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view your family record.",
+        });
+      }
+    }
+
     const family = await Family.findById(id);
 
     if (!family) {
@@ -148,7 +129,7 @@ export let getFamilyById = async (req, res) => {
     // Get all students in this family
     const students = await Student.find({ family: id })
       .populate('currentClass', 'className monthlyFee')
-      .select('studentId name currentClass feeBalance admissionDate');
+      .select('studentId name currentClass admissionDate');
 
     res.status(200).json({
       success: true,
@@ -221,10 +202,20 @@ export let deleteFamily = async (req, res) => {
   }
 };
 
-// Get family fee summary (combined dues/advance for all siblings)
+// Get family fee summary — reads the running balance from the family ledger
 export let getFamilyFeeSummary = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessFamilyId(req, id);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view fee summary for your family.",
+        });
+      }
+    }
 
     const family = await Family.findById(id);
     if (!family) {
@@ -234,25 +225,12 @@ export let getFamilyFeeSummary = async (req, res) => {
       });
     }
 
-    // Get all students in family
     const students = await Student.find({ family: id })
-      .select('studentId name currentClass feeBalance')
+      .select('studentId name currentClass')
       .populate('currentClass', 'className');
 
-    // Calculate combined balance
-    let totalDue = 0;
-    let totalAdvance = 0;
-
-    students.forEach(student => {
-      totalDue += student.feeBalance?.totalDue || 0;
-      totalAdvance += student.feeBalance?.totalAdvance || 0;
-    });
-
-    // Update family's fee balance
-    await Family.findByIdAndUpdate(id, {
-      'familyFeeBalance.totalDue': totalDue,
-      'familyFeeBalance.totalAdvance': totalAdvance
-    });
+    const totalDue = family.familyFeeBalance?.totalDue || 0;
+    const totalAdvance = family.familyFeeBalance?.totalAdvance || 0;
 
     res.status(200).json({
       success: true,

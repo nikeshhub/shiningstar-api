@@ -1,84 +1,24 @@
 import { Router } from "express";
 import {
-  createFeeStructure,
-  getFeeStructureByClass,
   createCharge,
   createPayment,
-  getStudentLedger,
+  getFamilyLedger,
+  getTransactionById,
   getDuesList,
   getFeeCollectionSummary,
   generateBillNumber,
-  createFamilyCharge,
-  createFamilyPayment,
-  getFamilyLedger
 } from "../Controller/fee.js";
+import { authorize } from "../Middleware/auth.js";
 
 let feeRouter = Router();
-
-/**
- * @swagger
- * /api/fee/structure:
- *   post:
- *     tags: [Fees]
- *     summary: Create a fee structure for a class
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/FeeStructureCreate'
- *     responses:
- *       201:
- *         description: Fee structure created successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       400:
- *         $ref: '#/components/responses/ValidationError'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *   get:
- *     tags: [Fees]
- *     summary: Get fee structure by class and year
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: classId
- *         required: true
- *         schema:
- *           type: string
- *         description: Class ObjectId
- *       - in: query
- *         name: academicYear
- *         required: true
- *         schema:
- *           type: string
- *         description: Academic year (e.g. 2081-2082)
- *     responses:
- *       200:
- *         description: Fee structure fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- */
-feeRouter.route("/structure")
-  .post(createFeeStructure)
-  .get(getFeeStructureByClass);
 
 /**
  * @swagger
  * /api/fee/charge:
  *   post:
  *     tags: [Fees]
- *     summary: Create a fee charge entry
- *     description: Adds a charge to a student's ledger. Calculates running balance based on previous transactions.
+ *     summary: Create a fee charge entry on a family ledger
+ *     description: Adds a charge to a family's ledger. Calculates running balance from previous family transactions.
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -86,35 +26,36 @@ feeRouter.route("/structure")
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/FeeChargeRequest'
+ *             type: object
+ *             required: [familyId, description, chargeAmount]
+ *             properties:
+ *               familyId: { type: string }
+ *               description: { type: string }
+ *               chargeAmount: { type: number }
+ *               billNumber: { type: string }
+ *               feeMonth: { type: string }
+ *               feeBreakdown:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     feeType: { type: string }
+ *                     amount: { type: number }
+ *                     student: { type: string }
  *     responses:
- *       201:
- *         description: Fee charged successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       400:
- *         $ref: '#/components/responses/ValidationError'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         description: Student not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *       201: { description: Fee charged successfully }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       404: { description: Family not found }
  */
-feeRouter.route("/charge")
-  .post(createCharge);
+feeRouter.route("/charge").post(authorize('Admin'), createCharge);
 
 /**
  * @swagger
  * /api/fee/payment:
  *   post:
  *     tags: [Fees]
- *     summary: Record a fee payment
- *     description: Records a payment against a student's ledger. Reduces dues or increases advance balance.
+ *     summary: Record a fee payment against a family ledger
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -122,136 +63,95 @@ feeRouter.route("/charge")
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/FeePaymentRequest'
+ *             type: object
+ *             required: [familyId, paidAmount]
+ *             properties:
+ *               familyId: { type: string }
+ *               paidAmount: { type: number }
+ *               paymentMethod:
+ *                 type: string
+ *                 enum: [Cash, Bank Transfer, Cheque, Online]
+ *               chequeNumber: { type: string }
+ *               transactionReference: { type: string }
+ *               description: { type: string }
+ *               feeMonths: { type: string }
  *     responses:
- *       201:
- *         description: Payment recorded successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessResponse'
- *       400:
- *         $ref: '#/components/responses/ValidationError'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
- *       404:
- *         description: Student not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
+ *       201: { description: Payment recorded successfully }
+ *       400: { $ref: '#/components/responses/ValidationError' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       404: { description: Family not found }
  */
-feeRouter.route("/payment")
-  .post(createPayment);
+feeRouter.route("/payment").post(authorize('Admin'), createPayment);
 
 /**
  * @swagger
- * /api/fee/ledger/{studentId}:
+ * /api/fee/ledger/{familyId}:
  *   get:
  *     tags: [Fees]
- *     summary: Get fee ledger for a student
- *     description: Returns all transactions (charges and payments) with running balance history.
+ *     summary: Get fee ledger for a family
+ *     description: Returns all transactions for the family with the current running balance.
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: studentId
+ *         name: familyId
  *         required: true
- *         schema:
- *           type: string
- *         description: Student ObjectId
+ *         schema: { type: string }
  *       - in: query
  *         name: startDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Filter start date
+ *         description: Optional BS date (YYYY-MM-DD) lower bound, inclusive
+ *         schema: { type: string, format: date }
  *       - in: query
  *         name: endDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Filter end date
+ *         description: Optional BS date (YYYY-MM-DD) upper bound, inclusive
+ *         schema: { type: string, format: date }
  *     responses:
- *       200:
- *         description: Ledger fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         student:
- *                           type: object
- *                         transactions:
- *                           type: array
- *                           items:
- *                             type: object
- *                         currentBalance:
- *                           type: object
- *                           properties:
- *                             totalDue:
- *                               type: number
- *                             totalAdvance:
- *                               type: number
- *                             netBalance:
- *                               type: number
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       200: { description: Ledger fetched successfully }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
  */
-feeRouter.route("/ledger/:studentId")
-  .get(getStudentLedger);
+feeRouter.route("/ledger/:familyId").get(authorize('Admin', 'Parent'), getFamilyLedger);
+
+/**
+ * @swagger
+ * /api/fee/transaction/{id}:
+ *   get:
+ *     tags: [Fees]
+ *     summary: Get a single fee transaction (bill or receipt) by id
+ *     description: Returns the transaction along with the related family and its students. Used by the bill/receipt preview page.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Transaction fetched successfully }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       404: { description: Transaction not found }
+ */
+feeRouter.route("/transaction/:id").get(authorize('Admin', 'Parent'), getTransactionById);
 
 /**
  * @swagger
  * /api/fee/dues:
  *   get:
  *     tags: [Fees]
- *     summary: Get dues list
- *     description: Returns students with outstanding dues, sorted by amount descending.
+ *     summary: Get families with outstanding dues
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
  *         name: classId
- *         schema:
- *           type: string
- *         description: Filter by class ObjectId
+ *         schema: { type: string }
  *       - in: query
  *         name: minAmount
- *         schema:
- *           type: number
- *         description: Minimum due amount threshold (default 0)
+ *         schema: { type: number }
  *     responses:
- *       200:
- *         description: Dues list fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         students:
- *                           type: array
- *                           items:
- *                             type: object
- *                         totalDues:
- *                           type: number
- *                         count:
- *                           type: integer
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       200: { description: Dues list fetched successfully }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
  */
-feeRouter.route("/dues")
-  .get(getDuesList);
+feeRouter.route("/dues").get(authorize('Admin'), getDuesList);
 
 /**
  * @swagger
@@ -259,91 +159,39 @@ feeRouter.route("/dues")
  *   get:
  *     tags: [Fees]
  *     summary: Get fee collection summary
- *     description: Returns total collection, transaction count, and breakdown by payment method.
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
  *         name: startDate
- *         schema:
- *           type: string
- *           format: date
- *         description: Start date filter
+ *         description: Optional BS date (YYYY-MM-DD) lower bound, inclusive
+ *         schema: { type: string, format: date }
  *       - in: query
  *         name: endDate
- *         schema:
- *           type: string
- *           format: date
- *         description: End date filter
+ *         description: Optional BS date (YYYY-MM-DD) upper bound, inclusive
+ *         schema: { type: string, format: date }
  *       - in: query
  *         name: classId
- *         schema:
- *           type: string
- *         description: Filter by class ObjectId
+ *         schema: { type: string }
  *     responses:
- *       200:
- *         description: Collection summary fetched successfully
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         totalCollection:
- *                           type: number
- *                         transactionCount:
- *                           type: integer
- *                         byPaymentMethod:
- *                           type: object
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       200: { description: Collection summary fetched successfully }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
  */
-feeRouter.route("/collection-summary")
-  .get(getFeeCollectionSummary);
+feeRouter.route("/collection-summary").get(authorize('Admin'), getFeeCollectionSummary);
 
 /**
  * @swagger
  * /api/fee/generate-bill-number:
  *   get:
  *     tags: [Fees]
- *     summary: Generate next bill number
- *     description: Returns the next sequential 6-digit bill number for charge entries.
+ *     summary: Generate next sequential bill number
  *     security:
  *       - bearerAuth: []
  *     responses:
- *       200:
- *         description: Bill number generated
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/SuccessResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         billNumber:
- *                           type: string
- *                           example: '000042'
- *       401:
- *         $ref: '#/components/responses/Unauthorized'
+ *       200: { description: Bill number generated }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
  */
-feeRouter.route("/generate-bill-number")
-  .get(generateBillNumber);
+feeRouter.route("/generate-bill-number").get(authorize('Admin'), generateBillNumber);
 
-// Family billing routes
-feeRouter.route("/family/charge")
-  .post(createFamilyCharge);
-
-feeRouter.route("/family/payment")
-  .post(createFamilyPayment);
-
-feeRouter.route("/family/ledger/:familyId")
-  .get(getFamilyLedger);
 
 export default feeRouter;

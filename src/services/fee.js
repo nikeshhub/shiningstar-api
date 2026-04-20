@@ -1,349 +1,529 @@
-import { FeeStructure, FeeTransaction, Student, Class, Family } from "../Model/model.js";
+import { FeeTransaction, Student, Family, Settings } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
-import { generateDemandBill, generatePaymentReceipt } from "../utils/pdfGenerator.js";
-import { uploadBufferToCloudinary } from "../config/cloudinary.js";
 import { getRequestUserId } from "../utils/requestUser.js";
-import { withFamilyContactList } from "../utils/studentFamily.js";
 import { getNextNumericBillNumber } from "../utils/billNumber.js";
+import { parseDateInputForBoundary } from "../utils/nepaliDate.js";
+import { canParentAccessFamilyId } from "../utils/accessScope.js";
 
-// Fee Structure Management (DEPRECATED - kept for backward compatibility)
-// New system: Monthly fees stored in Class, Exam fees stored in Exam
-
-export let createFeeStructure = async (req, res) => {
+// Fetch the school's active academic year from Settings (singleton).
+// Falls back to a placeholder if Settings hasn't been configured yet.
+const getActiveAcademicYear = async () => {
   try {
-    const result = await FeeStructure.create(req.body);
-    res.status(201).json({
-      success: true,
-      message: "Fee structure created successfully (deprecated - use Class monthlyFee and Exam examFee instead)",
-      data: result,
-    });
-  } catch (error) {
-    handleError(res, error);
+    const settings = await Settings.findOne({});
+    return settings?.activeAcademicYear || '2081-82';
+  } catch {
+    return '2081-82';
   }
 };
 
-export let getFeeStructureByClass = async (req, res) => {
-  try {
-    const { classId, academicYear } = req.query;
-    const result = await FeeStructure.findOne({
-      class: classId,
-      academicYear
-    }).populate('class');
+// All fees are billed at the family level. Every student belongs to a family
+// and transactions are recorded against Family -> familyFeeBalance.
+//
+// IMPORTANT: `postFamilyLedgerEntry` below is the ONLY function that writes to
+// FeeTransaction + Family.familyFeeBalance. Every caller (manual charge/payment,
+// exam fees, inventory charges) MUST go through it. Do not write these two
+// collections directly anywhere else — doing so breaks the invariant that the
+// mirror matches the latest ledger row.
 
-    res.status(200).json({
-      success: true,
-      message: "Fee structure fetched successfully (deprecated - use Class monthlyFee and Exam examFee instead)",
-      data: result,
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
+const loadFamilyWithStudents = async (familyId) => {
+  const family = await Family.findById(familyId);
+  if (!family) return { family: null, students: [] };
+  const students = await Student.find({ family: familyId }).populate('currentClass');
+  return { family, students };
 };
 
-// Fee Transaction Management (Ledger System)
+const MAX_CAS_RETRIES = 8;
 
-// Create a charge entry (like Dad's notebook - adding fees)
+/**
+ * Append one row to a family's fee ledger, atomically updating the
+ * denormalized `familyFeeBalance` mirror on the Family document.
+ *
+ * Concurrency model: optimistic compare-and-swap with retry. We read the
+ * current balance, compute the new one, then update conditionally on the
+ * balance being unchanged. If a concurrent write bumped it in between we
+ * retry. Mongo single-document updates are atomic, so this is race-free
+ * without requiring a replica set / multi-doc transaction.
+ *
+ * Durability model: if the ledger insert fails after the mirror has been
+ * bumped, we revert the mirror in a best-effort compensation. Short of a
+ * multi-doc transaction, this is the strongest guarantee we can offer.
+ *
+ * @param {Object} entry
+ * @param {string|ObjectId} entry.familyId
+ * @param {number} entry.delta                  Signed balance delta (+charge, -payment)
+ * @param {'Charge'|'Payment'} entry.transactionType
+ * @param {string} entry.description
+ * @param {number} [entry.chargeAmount=0]
+ * @param {number} [entry.paidAmount=0]
+ * @param {string} [entry.billNumber]
+ * @param {Array}  [entry.feeBreakdown]
+ * @param {string} [entry.paymentMethod]
+ * @param {string} [entry.chequeNumber]
+ * @param {string} [entry.transactionReference]
+ * @param {string} [entry.remarks]
+ * @param {string|ObjectId} [entry.createdBy]
+ * @param {Date}   [entry.date]
+ * @returns {Promise<Document>} The created FeeTransaction
+ */
+export async function postFamilyLedgerEntry(entry) {
+  const {
+    familyId,
+    delta,
+    transactionType,
+    description,
+    chargeAmount = 0,
+    paidAmount = 0,
+    billNumber,
+    feeBreakdown,
+    paymentMethod,
+    chequeNumber,
+    transactionReference,
+    remarks,
+    createdBy,
+    academicYear,
+    date = new Date(),
+  } = entry;
+
+  if (!familyId) {
+    const err = new Error('familyId is required');
+    err.status = 400;
+    throw err;
+  }
+  if (!Number.isFinite(delta)) {
+    throw new Error('delta must be a finite number');
+  }
+
+  for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
+    const family = await Family.findById(familyId).select('familyFeeBalance');
+    if (!family) {
+      const err = new Error('Family not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const oldDue = family.familyFeeBalance?.totalDue || 0;
+    const oldAdv = family.familyFeeBalance?.totalAdvance || 0;
+    const previousBalance = oldDue - oldAdv;
+    const net = previousBalance + delta;
+    const newDue = net > 0 ? net : 0;
+    const newAdv = net < 0 ? Math.abs(net) : 0;
+
+    // Atomic compare-and-swap on the mirror. If another writer raced us
+    // between the read above and here, matchedCount === 0 and we retry.
+    const casResult = await Family.updateOne(
+      {
+        _id: familyId,
+        'familyFeeBalance.totalDue': oldDue,
+        'familyFeeBalance.totalAdvance': oldAdv,
+      },
+      {
+        $set: {
+          'familyFeeBalance.totalDue': newDue,
+          'familyFeeBalance.totalAdvance': newAdv,
+        },
+      }
+    );
+
+    if (casResult.matchedCount === 0) {
+      // Exponential-ish backoff between retries
+      await new Promise((r) => setTimeout(r, 10 * (attempt + 1)));
+      continue;
+    }
+
+    // CAS succeeded; write the ledger row.
+    try {
+      const txn = await FeeTransaction.create({
+        family: familyId,
+        date,
+        billNumber,
+        transactionType,
+        description,
+        chargeAmount,
+        paidAmount,
+        previousBalance,
+        totalDue: newDue,
+        totalAdvance: newAdv,
+        feeBreakdown,
+        paymentMethod,
+        chequeNumber,
+        transactionReference,
+        remarks,
+        createdBy,
+        academicYear,
+        // Charge-specific defaults (payments leave these at schema defaults)
+        ...(transactionType === 'Charge' && { settledAmount: 0, status: 'Unpaid' }),
+      });
+      return txn;
+    } catch (err) {
+      // Ledger insert failed. Compensate by reverting the mirror so the
+      // next writer sees a consistent state. Best-effort — log if it fails.
+      try {
+        await Family.updateOne(
+          {
+            _id: familyId,
+            'familyFeeBalance.totalDue': newDue,
+            'familyFeeBalance.totalAdvance': newAdv,
+          },
+          {
+            $set: {
+              'familyFeeBalance.totalDue': oldDue,
+              'familyFeeBalance.totalAdvance': oldAdv,
+            },
+          }
+        );
+      } catch (rollbackErr) {
+        console.error('postFamilyLedgerEntry: failed to roll back mirror', {
+          familyId: String(familyId),
+          ledgerError: err?.message,
+          rollbackError: rollbackErr?.message,
+        });
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `postFamilyLedgerEntry: exceeded ${MAX_CAS_RETRIES} retries for family ${familyId}`
+  );
+}
+
+// Create a charge on the family ledger
 export let createCharge = async (req, res) => {
   try {
-    const { studentId, description, chargeAmount, feeBreakdown } = req.body;
+    const { familyId, description, chargeAmount, feeBreakdown } = req.body;
+    if (!familyId) {
+      return res.status(400).json({ success: false, message: "familyId is required" });
+    }
+
+    const { family } = await loadFamilyWithStudents(familyId);
+    if (!family) {
+      return res.status(404).json({ success: false, message: "Family not found" });
+    }
+
     const createdBy = getRequestUserId(req);
     const billNumber =
       req.body.billNumber || (await getNextNumericBillNumber(FeeTransaction));
+    const academicYear = await getActiveAcademicYear();
 
-    // Get student's current balance
-    const student = await Student.findById(studentId);
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: "Student not found"
-      });
-    }
-
-    // Get last transaction to calculate running balance
-    const lastTransaction = await FeeTransaction
-      .findOne({ student: studentId })
-      .sort({ date: -1 });
-
-    const previousBalance = lastTransaction
-      ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
-      : 0;
-
-    // Calculate new balances
-    const newTotalDue = previousBalance >= 0
-      ? previousBalance + chargeAmount
-      : chargeAmount;
-
-    const newTotalAdvance = previousBalance < 0
-      ? Math.abs(previousBalance)
-      : 0;
-
-    // Create transaction
-    const transaction = await FeeTransaction.create({
-      student: studentId,
-      date: new Date(),
-      billNumber,
+    const transaction = await postFamilyLedgerEntry({
+      familyId,
+      delta: Number(chargeAmount) || 0,
       transactionType: 'Charge',
       description,
-      chargeAmount,
-      paidAmount: 0,
-      previousBalance,
-      totalDue: newTotalDue > newTotalAdvance ? newTotalDue - newTotalAdvance : 0,
-      totalAdvance: newTotalAdvance > newTotalDue ? newTotalAdvance - newTotalDue : 0,
+      chargeAmount: Number(chargeAmount) || 0,
+      billNumber,
       feeBreakdown,
-      createdBy
+      academicYear,
+      createdBy,
     });
-
-    // Update student's fee balance summary
-    await Student.findByIdAndUpdate(studentId, {
-      'feeBalance.totalDue': transaction.totalDue,
-      'feeBalance.totalAdvance': transaction.totalAdvance
-    });
-
-    // Generate PDF Bill
-    try {
-      const studentWithClass = await Student.findById(studentId).populate('currentClass');
-      const billData = {
-        billNumber,
-        date: transaction.date,
-        studentName: studentWithClass.name,
-        className: studentWithClass.currentClass?.className || '',
-        rollNumber: studentWithClass.rollNumber || '',
-        feeMonth: req.body.feeMonth || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-        feeBreakdown: feeBreakdown || [],
-        totalAmount: chargeAmount,
-        advance: previousBalance < 0 ? Math.abs(previousBalance) : 0,
-      };
-
-      const pdfBuffer = await generateDemandBill(billData);
-      const result = await uploadBufferToCloudinary(pdfBuffer, 'pdfs', 'raw');
-      transaction.billPdfUrl = result.secure_url;
-      await transaction.save();
-    } catch (pdfError) {
-      console.error('Error generating PDF:', pdfError);
-    }
 
     res.status(201).json({
       success: true,
       message: "Fee charged successfully",
-      data: transaction
+      data: transaction,
     });
   } catch (error) {
     handleError(res, error);
   }
 };
 
-// Create a payment entry
+// Record a payment against the family ledger and apply FIFO allocation to
+// outstanding charge transactions (oldest unpaid/partial first).
 export let createPayment = async (req, res) => {
   try {
-    const { studentId, description, paidAmount, paymentMethod, chequeNumber, transactionReference } = req.body;
+    const { familyId, description, paidAmount, paymentMethod, chequeNumber, transactionReference } = req.body;
+    if (!familyId) {
+      return res.status(400).json({ success: false, message: "familyId is required" });
+    }
+
+    const { family } = await loadFamilyWithStudents(familyId);
+    if (!family) {
+      return res.status(404).json({ success: false, message: "Family not found" });
+    }
+
     const createdBy = getRequestUserId(req);
+    const amount = Number(paidAmount) || 0;
+    const academicYear = await getActiveAcademicYear();
 
-    // Get student
-    const student = await Student.findById(studentId);
-    if (!student) {
-      return res.status(404).json({
-        success: false,
-        message: "Student not found"
-      });
-    }
-
-    // Get last transaction
-    const lastTransaction = await FeeTransaction
-      .findOne({ student: studentId })
-      .sort({ date: -1 });
-
-    const previousBalance = lastTransaction
-      ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
-      : 0;
-
-    // Calculate new balances
-    // If previous balance is positive (dues), payment reduces it
-    // If previous balance is negative (advance), payment increases advance
-    let newTotalDue = 0;
-    let newTotalAdvance = 0;
-
-    if (previousBalance > 0) {
-      // There are dues
-      if (paidAmount >= previousBalance) {
-        // Payment covers all dues and creates advance
-        newTotalDue = 0;
-        newTotalAdvance = paidAmount - previousBalance;
-      } else {
-        // Payment partially covers dues
-        newTotalDue = previousBalance - paidAmount;
-        newTotalAdvance = 0;
-      }
-    } else {
-      // There's already advance
-      newTotalDue = 0;
-      newTotalAdvance = Math.abs(previousBalance) + paidAmount;
-    }
-
-    // Create transaction
-    const transaction = await FeeTransaction.create({
-      student: studentId,
-      date: new Date(),
+    const transaction = await postFamilyLedgerEntry({
+      familyId,
+      delta: -amount,
       transactionType: 'Payment',
       description: description || 'Payment received',
-      chargeAmount: 0,
-      paidAmount,
-      previousBalance,
-      totalDue: newTotalDue,
-      totalAdvance: newTotalAdvance,
+      paidAmount: amount,
       paymentMethod,
       chequeNumber,
       transactionReference,
-      createdBy
+      academicYear,
+      createdBy,
     });
 
-    // Update student's fee balance
-    await Student.findByIdAndUpdate(studentId, {
-      'feeBalance.totalDue': transaction.totalDue,
-      'feeBalance.totalAdvance': transaction.totalAdvance
-    });
+    // ── FIFO allocation ───────────────────────────────────────────────────
+    // Apply payment to oldest unpaid/partial charges first.
+    // We treat missing `status` (legacy rows) as 'Unpaid' via $ne 'Paid'.
+    const unpaidCharges = await FeeTransaction.find({
+      family: familyId,
+      transactionType: 'Charge',
+      status: { $ne: 'Paid' },
+    }).sort({ date: 1, createdAt: 1 });
 
-    // Generate PDF Receipt
-    try {
-      const receiptNumber = String(Date.now()).slice(-6);
-      const receiptData = {
-        receiptNumber,
-        receivedFrom: student.name,
-        paidAmount,
-        outOfAmount: previousBalance > 0 ? previousBalance : paidAmount,
-        balanceAmount: newTotalDue,
-        feeMonths: req.body.feeMonths || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-      };
+    let remaining = amount;
+    const bulkOps = [];
 
-      const pdfBuffer = await generatePaymentReceipt(receiptData);
-      const result = await uploadBufferToCloudinary(pdfBuffer, 'pdfs', 'raw');
-      transaction.receiptPdfUrl = result.secure_url;
-      await transaction.save();
-    } catch (pdfError) {
-      console.error('Error generating receipt PDF:', pdfError);
+    for (const charge of unpaidCharges) {
+      if (remaining <= 0) break;
+
+      const alreadySettled = charge.settledAmount || 0;
+      const chargeRemaining = charge.chargeAmount - alreadySettled;
+      if (chargeRemaining <= 0) continue;
+
+      const toApply = Math.min(remaining, chargeRemaining);
+      const newSettled = alreadySettled + toApply;
+      const newStatus = newSettled >= charge.chargeAmount ? 'Paid' : 'Partial';
+
+      bulkOps.push({
+        updateOne: {
+          filter: { _id: charge._id },
+          update: { $set: { settledAmount: newSettled, status: newStatus } },
+        },
+      });
+
+      remaining -= toApply;
     }
+
+    if (bulkOps.length > 0) {
+      await FeeTransaction.bulkWrite(bulkOps);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     res.status(201).json({
       success: true,
       message: "Payment recorded successfully",
-      data: transaction
+      data: transaction,
     });
   } catch (error) {
     handleError(res, error);
   }
 };
 
-// Get student ledger (like Dad's notebook)
-export let getStudentLedger = async (req, res) => {
+// Family ledger (all transactions, full history, current balance, and member students)
+export let getFamilyLedger = async (req, res) => {
   try {
-    const { studentId } = req.params;
+    const { familyId } = req.params;
     const { startDate, endDate } = req.query;
 
-    // Only show Individual billing transactions in student ledger
-    // Family billing transactions should be viewed in Family Ledger
-    let query = { student: studentId, billingScope: 'Individual' };
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessFamilyId(req, familyId);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view your family ledger.",
+        });
+      }
+    }
 
+    const family = await Family.findById(familyId);
+    if (!family) {
+      return res.status(404).json({ success: false, message: "Family not found" });
+    }
+
+    const students = await Student.find({ family: familyId })
+      .populate('currentClass', 'className')
+      .select('studentId name currentClass');
+
+    let query = { family: familyId };
     if (startDate || endDate) {
       query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
+      if (startDate) {
+        const parsedStart = parseDateInputForBoundary(startDate, { boundary: "start" });
+        if (!parsedStart) {
+          return res.status(400).json({ success: false, message: "Start date is invalid" });
+        }
+        query.date.$gte = parsedStart;
+      }
+      if (endDate) {
+        const parsedEnd = parseDateInputForBoundary(endDate, { boundary: "end" });
+        if (!parsedEnd) {
+          return res.status(400).json({ success: false, message: "End date is invalid" });
+        }
+        query.date.$lte = parsedEnd;
+      }
     }
 
     const transactions = await FeeTransaction
       .find(query)
-      .populate('student', 'name studentId currentClass')
-      .populate({
-        path: 'student',
-        populate: { path: 'currentClass' }
-      })
-      .sort({ date: 1 });
+      .sort({ date: 1, createdAt: 1 });
 
-    // Get current balance
-    const latestTransaction = transactions[transactions.length - 1];
-    const currentBalance = latestTransaction
+    const latest = transactions[transactions.length - 1];
+    const currentBalance = latest
       ? {
-          totalDue: latestTransaction.totalDue,
-          totalAdvance: latestTransaction.totalAdvance,
-          netBalance: latestTransaction.totalDue - latestTransaction.totalAdvance
+          totalDue: latest.totalDue,
+          totalAdvance: latest.totalAdvance,
+          netBalance: latest.totalDue - latest.totalAdvance,
         }
       : { totalDue: 0, totalAdvance: 0, netBalance: 0 };
 
     res.status(200).json({
       success: true,
-      message: "Ledger fetched successfully",
-      data: {
-        student: transactions[0]?.student,
-        transactions,
-        currentBalance
-      }
+      message: "Family ledger fetched successfully",
+      data: { family, students, transactions, currentBalance },
     });
   } catch (error) {
     handleError(res, error);
   }
 };
 
-// Get dues list (बक्यौता सूची)
+// Fetch a single fee transaction (charge or payment) along with the family +
+// students, for rendering the bill/receipt preview page.
+export let getTransactionById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const txn = await FeeTransaction.findById(id).populate({
+      path: 'createdBy',
+      select: 'phoneNumber email role',
+    });
+
+    if (!txn) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (req.user?.role === "Parent") {
+      const allowed = await canParentAccessFamilyId(req, txn.family);
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. You can only view transactions for your family.",
+        });
+      }
+    }
+
+    const family = await Family.findById(txn.family);
+    if (!family) {
+      return res.status(404).json({ success: false, message: "Family not found" });
+    }
+
+    const students = await Student.find({ family: txn.family })
+      .populate('currentClass', 'className')
+      .select('studentId name currentClass rollNumber');
+
+    res.status(200).json({
+      success: true,
+      message: "Transaction fetched successfully",
+      data: { transaction: txn, family, students },
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+};
+
+// Dues list — families with outstanding balances
 export let getDuesList = async (req, res) => {
   try {
     const { classId, minAmount } = req.query;
+    const threshold = Number(minAmount) || 0;
 
-    let studentQuery = { status: 'Active' };
-    if (classId) studentQuery.currentClass = classId;
+    let familyQuery = {
+      status: 'Active',
+      'familyFeeBalance.totalDue': { $gt: threshold },
+    };
 
-    // Find students with dues
-    studentQuery['feeBalance.totalDue'] = { $gt: minAmount || 0 };
+    // If a class filter is provided, restrict to families that have at least
+    // one active student in that class.
+    if (classId) {
+      const studentsInClass = await Student.find({
+        currentClass: classId,
+        status: 'Active',
+      }).select('family');
+      const familyIds = [...new Set(
+        studentsInClass.map(s => s.family?.toString()).filter(Boolean)
+      )];
+      familyQuery._id = { $in: familyIds };
+    }
 
-    const students = await Student
-      .find(studentQuery)
-      .populate('currentClass')
-      .populate('family')
-      .select('studentId name currentClass family feeBalance')
-      .sort({ 'feeBalance.totalDue': -1 });
+    const families = await Family.find(familyQuery)
+      .sort({ 'familyFeeBalance.totalDue': -1 });
 
-    const studentsWithContact = withFamilyContactList(students);
-    const totalDues = studentsWithContact.reduce(
-      (sum, student) => sum + student.feeBalance.totalDue,
+    // Batch-fetch all students across every family in a single query,
+    // then bucket them by family in memory. Kills the previous N+1.
+    const familyIds = families.map((f) => f._id);
+    const allStudents = familyIds.length
+      ? await Student.find({ family: { $in: familyIds } })
+          .populate('currentClass', 'className')
+          .select('studentId name currentClass family')
+      : [];
+
+    const studentsByFamily = new Map();
+    for (const s of allStudents) {
+      const key = s.family?.toString();
+      if (!key) continue;
+      if (!studentsByFamily.has(key)) studentsByFamily.set(key, []);
+      studentsByFamily.get(key).push(s);
+    }
+
+    const data = families.map((family) => ({
+      ...family.toObject(),
+      students: studentsByFamily.get(family._id.toString()) || [],
+      parentName: family.primaryContact?.name || null,
+      parentContact: family.primaryContact?.mobile || null,
+    }));
+
+    const totalDues = data.reduce(
+      (sum, f) => sum + (f.familyFeeBalance?.totalDue || 0),
       0
     );
 
     res.status(200).json({
       success: true,
       message: "Dues list fetched successfully",
-      data: {
-        students: studentsWithContact,
-        totalDues,
-        count: studentsWithContact.length
-      }
+      data: { families: data, totalDues, count: data.length },
     });
   } catch (error) {
     handleError(res, error);
   }
 };
 
-// Fee collection summary
+// Fee collection summary — payments across families, optionally filtered by class membership
 export let getFeeCollectionSummary = async (req, res) => {
   try {
     const { startDate, endDate, classId } = req.query;
 
     let query = { transactionType: 'Payment' };
-
     if (startDate || endDate) {
       query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
+      if (startDate) {
+        const parsedStart = parseDateInputForBoundary(startDate, { boundary: "start" });
+        if (!parsedStart) {
+          return res.status(400).json({ success: false, message: "Start date is invalid" });
+        }
+        query.date.$gte = parsedStart;
+      }
+      if (endDate) {
+        const parsedEnd = parseDateInputForBoundary(endDate, { boundary: "end" });
+        if (!parsedEnd) {
+          return res.status(400).json({ success: false, message: "End date is invalid" });
+        }
+        query.date.$lte = parsedEnd;
+      }
     }
 
-    const payments = await FeeTransaction.find(query).populate({
-      path: 'student',
-      match: classId ? { currentClass: classId } : {}
-    });
+    // Class filter: restrict to families that contain a student in the class
+    if (classId) {
+      const studentsInClass = await Student.find({
+        currentClass: classId,
+        status: 'Active',
+      }).select('family');
+      const familyIds = [...new Set(
+        studentsInClass.map(s => s.family?.toString()).filter(Boolean)
+      )];
+      query.family = { $in: familyIds };
+    }
 
-    const filteredPayments = payments.filter(p => p.student);
+    const payments = await FeeTransaction.find(query);
 
-    const totalCollection = filteredPayments.reduce((sum, payment) => sum + payment.paidAmount, 0);
+    const totalCollection = payments.reduce((sum, p) => sum + p.paidAmount, 0);
 
-    // Group by payment method
-    const byPaymentMethod = filteredPayments.reduce((acc, payment) => {
-      const method = payment.paymentMethod;
+    const byPaymentMethod = payments.reduce((acc, payment) => {
+      const method = payment.paymentMethod || 'Cash';
       if (!acc[method]) acc[method] = { count: 0, amount: 0 };
       acc[method].count++;
       acc[method].amount += payment.paidAmount;
@@ -355,295 +535,23 @@ export let getFeeCollectionSummary = async (req, res) => {
       message: "Collection summary fetched successfully",
       data: {
         totalCollection,
-        transactionCount: filteredPayments.length,
-        byPaymentMethod
-      }
+        transactionCount: payments.length,
+        byPaymentMethod,
+      },
     });
   } catch (error) {
     handleError(res, error);
   }
 };
+
 
 // Auto-generate bill number
 export let generateBillNumber = async (req, res) => {
   try {
     const newBillNumber = await getNextNumericBillNumber(FeeTransaction);
-
     res.status(200).json({
       success: true,
-      data: { billNumber: newBillNumber }
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
-};
-
-// FAMILY BILLING FUNCTIONS
-
-// Create a family charge (combined bill for all siblings)
-export let createFamilyCharge = async (req, res) => {
-  try {
-    const { familyId, description, chargeAmount, feeBreakdown } = req.body;
-    const createdBy = getRequestUserId(req);
-    const billNumber =
-      req.body.billNumber || (await getNextNumericBillNumber(FeeTransaction));
-
-    // Get family
-    const family = await Family.findById(familyId);
-    if (!family) {
-      return res.status(404).json({
-        success: false,
-        message: "Family not found"
-      });
-    }
-
-    // Get all students in the family
-    const students = await Student.find({ family: familyId });
-    if (students.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No students found in this family"
-      });
-    }
-
-    // Use first student as the primary reference for the transaction
-    const primaryStudent = students[0];
-
-    // Get last family transaction to calculate running balance
-    const lastTransaction = await FeeTransaction
-      .findOne({ family: familyId, billingScope: 'Family' })
-      .sort({ date: -1 });
-
-    const previousBalance = lastTransaction
-      ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
-      : 0;
-
-    // Calculate new balances
-    const newTotalDue = previousBalance >= 0
-      ? previousBalance + chargeAmount
-      : chargeAmount;
-
-    const newTotalAdvance = previousBalance < 0
-      ? Math.abs(previousBalance)
-      : 0;
-
-    // Create transaction
-    const transaction = await FeeTransaction.create({
-      student: primaryStudent._id,
-      family: familyId,
-      billingScope: 'Family',
-      date: new Date(),
-      billNumber,
-      transactionType: 'Charge',
-      description,
-      chargeAmount,
-      paidAmount: 0,
-      previousBalance,
-      totalDue: newTotalDue > newTotalAdvance ? newTotalDue - newTotalAdvance : 0,
-      totalAdvance: newTotalAdvance > newTotalDue ? newTotalAdvance - newTotalDue : 0,
-      feeBreakdown,
-      createdBy
-    });
-
-    // Update family's fee balance
-    await Family.findByIdAndUpdate(familyId, {
-      'familyFeeBalance.totalDue': transaction.totalDue,
-      'familyFeeBalance.totalAdvance': transaction.totalAdvance
-    });
-
-    // Generate PDF Bill for Family
-    try {
-      const primaryStudentWithClass = await Student.findById(primaryStudent._id).populate('currentClass');
-      const siblingNames = students.map(s => s.name).join(', ');
-      const billData = {
-        billNumber,
-        date: transaction.date,
-        studentName: `${family.primaryContact.name} (Family: ${siblingNames})`,
-        className: primaryStudentWithClass.currentClass?.className || 'Multiple Classes',
-        rollNumber: '',
-        feeMonth: req.body.feeMonth || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-        feeBreakdown: feeBreakdown || [],
-        totalAmount: chargeAmount,
-        advance: previousBalance < 0 ? Math.abs(previousBalance) : 0,
-      };
-
-      const pdfBuffer = await generateDemandBill(billData);
-      const result = await uploadBufferToCloudinary(pdfBuffer, 'pdfs', 'raw');
-      transaction.billPdfUrl = result.secure_url;
-      await transaction.save();
-    } catch (pdfError) {
-      console.error('Error generating family bill PDF:', pdfError);
-    }
-
-    res.status(201).json({
-      success: true,
-      message: "Family fee charged successfully",
-      data: transaction
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
-};
-
-// Create a family payment (payment for entire family)
-export let createFamilyPayment = async (req, res) => {
-  try {
-    const { familyId, description, paidAmount, paymentMethod, chequeNumber, transactionReference } = req.body;
-    const createdBy = getRequestUserId(req);
-
-    // Get family
-    const family = await Family.findById(familyId);
-    if (!family) {
-      return res.status(404).json({
-        success: false,
-        message: "Family not found"
-      });
-    }
-
-    // Get all students in the family
-    const students = await Student.find({ family: familyId });
-    if (students.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No students found in this family"
-      });
-    }
-
-    // Use first student as the primary reference
-    const primaryStudent = students[0];
-
-    // Get last family transaction
-    const lastTransaction = await FeeTransaction
-      .findOne({ family: familyId, billingScope: 'Family' })
-      .sort({ date: -1 });
-
-    const previousBalance = lastTransaction
-      ? (lastTransaction.totalDue - lastTransaction.totalAdvance)
-      : 0;
-
-    // Calculate new balances
-    let newTotalDue = 0;
-    let newTotalAdvance = 0;
-
-    if (previousBalance > 0) {
-      if (paidAmount >= previousBalance) {
-        newTotalDue = 0;
-        newTotalAdvance = paidAmount - previousBalance;
-      } else {
-        newTotalDue = previousBalance - paidAmount;
-        newTotalAdvance = 0;
-      }
-    } else {
-      newTotalDue = 0;
-      newTotalAdvance = Math.abs(previousBalance) + paidAmount;
-    }
-
-    // Create transaction
-    const transaction = await FeeTransaction.create({
-      student: primaryStudent._id,
-      family: familyId,
-      billingScope: 'Family',
-      date: new Date(),
-      transactionType: 'Payment',
-      description: description || 'Payment received',
-      chargeAmount: 0,
-      paidAmount,
-      previousBalance,
-      totalDue: newTotalDue,
-      totalAdvance: newTotalAdvance,
-      paymentMethod,
-      chequeNumber,
-      transactionReference,
-      createdBy
-    });
-
-    // Update family's fee balance
-    await Family.findByIdAndUpdate(familyId, {
-      'familyFeeBalance.totalDue': transaction.totalDue,
-      'familyFeeBalance.totalAdvance': transaction.totalAdvance
-    });
-
-    // Generate PDF Receipt for Family
-    try {
-      const receiptNumber = String(Date.now()).slice(-6);
-      const receiptData = {
-        receiptNumber,
-        receivedFrom: `${family.primaryContact.name} (Family)`,
-        paidAmount,
-        outOfAmount: previousBalance > 0 ? previousBalance : paidAmount,
-        balanceAmount: newTotalDue,
-        feeMonths: req.body.feeMonths || new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-      };
-
-      const pdfBuffer = await generatePaymentReceipt(receiptData);
-      const result = await uploadBufferToCloudinary(pdfBuffer, 'pdfs', 'raw');
-      transaction.receiptPdfUrl = result.secure_url;
-      await transaction.save();
-    } catch (pdfError) {
-      console.error('Error generating family receipt PDF:', pdfError);
-    }
-
-    res.status(201).json({
-      success: true,
-      message: "Family payment recorded successfully",
-      data: transaction
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
-};
-
-// Get family ledger (combined ledger for all siblings)
-export let getFamilyLedger = async (req, res) => {
-  try {
-    const { familyId } = req.params;
-    const { startDate, endDate } = req.query;
-
-    const family = await Family.findById(familyId);
-    if (!family) {
-      return res.status(404).json({
-        success: false,
-        message: "Family not found"
-      });
-    }
-
-    // Get all students in the family
-    const students = await Student.find({ family: familyId })
-      .populate('currentClass', 'className')
-      .select('studentId name currentClass');
-
-    let query = { family: familyId, billingScope: 'Family' };
-
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
-    }
-
-    const transactions = await FeeTransaction
-      .find(query)
-      .populate('student', 'name studentId')
-      .sort({ date: 1 });
-
-    // Get current balance
-    const latestTransaction = transactions[transactions.length - 1];
-    const currentBalance = latestTransaction
-      ? {
-          totalDue: latestTransaction.totalDue,
-          totalAdvance: latestTransaction.totalAdvance,
-          netBalance: latestTransaction.totalDue - latestTransaction.totalAdvance
-        }
-      : { totalDue: 0, totalAdvance: 0, netBalance: 0 };
-
-    res.status(200).json({
-      success: true,
-      message: "Family ledger fetched successfully",
-      data: {
-        family,
-        students,
-        transactions,
-        currentBalance
-      }
+      data: { billNumber: newBillNumber },
     });
   } catch (error) {
     handleError(res, error);

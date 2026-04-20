@@ -1,22 +1,11 @@
 import { Schema } from "mongoose";
 
-// This is the ledger system like "Dad's notebook"
+// Family-level ledger. Every transaction belongs to a family.
 let feeTransactionSchema = Schema({
-  student: {
-    type: Schema.Types.ObjectId,
-    ref: 'Student',
-    required: true
-  },
-  // For family billing - when billingScope is 'Family', this links to family
   family: {
     type: Schema.Types.ObjectId,
-    ref: 'Family'
-  },
-  // Billing scope: 'Individual' or 'Family'
-  billingScope: {
-    type: String,
-    enum: ['Individual', 'Family'],
-    default: 'Individual'
+    ref: 'Family',
+    required: true
   },
   date: {
     type: Date,
@@ -37,17 +26,55 @@ let feeTransactionSchema = Schema({
     type: String,
     required: true
   },
-  // For Charge entries
+  academicYear: {
+    type: String, // e.g. "2083-84" — tagged from global Settings at creation time
+  },
+
+  // ── Charge fields ────────────────────────────────────────────────────────
   chargeAmount: {
     type: Number,
     default: 0
   },
-  // For Payment entries
+  // How much of this charge has been settled by incoming payments (FIFO)
+  settledAmount: {
+    type: Number,
+    default: 0
+  },
+  // Charge lifecycle: Unpaid → Partial → Paid
+  status: {
+    type: String,
+    enum: ['Unpaid', 'Partial', 'Paid'],
+    default: 'Unpaid'
+  },
+  // Fee breakdown for charge entries
+  feeBreakdown: [{
+    feeType: String,
+    amount: Number,
+    // Optionally attribute a line item to a specific student in the family
+    student: {
+      type: Schema.Types.ObjectId,
+      ref: 'Student'
+    }
+  }],
+
+  // ── Payment fields ───────────────────────────────────────────────────────
   paidAmount: {
     type: Number,
     default: 0
   },
-  // Running balance calculations
+  paymentMethod: {
+    type: String,
+    enum: ['Cash', 'Bank Transfer', 'Cheque', 'Online'],
+    default: 'Cash'
+  },
+  chequeNumber: {
+    type: String
+  },
+  transactionReference: {
+    type: String
+  },
+
+  // ── Running balance snapshot (set at write time) ─────────────────────────
   previousBalance: {
     type: Number,
     default: 0
@@ -60,30 +87,7 @@ let feeTransactionSchema = Schema({
     type: Number,
     default: 0
   },
-  // Payment details
-  paymentMethod: {
-    type: String,
-    enum: ['Cash', 'Bank Transfer', 'Cheque', 'Online'],
-    default: 'Cash'
-  },
-  chequeNumber: {
-    type: String
-  },
-  transactionReference: {
-    type: String
-  },
-  // Fee breakdown for charge entries
-  feeBreakdown: [{
-    feeType: String,
-    amount: Number
-  }],
-  // PDF URLs
-  billPdfUrl: {
-    type: String // For charge transactions - link to demand bill PDF
-  },
-  receiptPdfUrl: {
-    type: String // For payment transactions - link to receipt PDF
-  },
+
   remarks: {
     type: String
   },
@@ -95,7 +99,7 @@ let feeTransactionSchema = Schema({
   timestamps: true
 });
 
-// Index for faster queries
-feeTransactionSchema.index({ student: 1, date: -1 });
+feeTransactionSchema.index({ family: 1, date: -1 });
+feeTransactionSchema.index({ family: 1, transactionType: 1, status: 1 });
 
 export default feeTransactionSchema;

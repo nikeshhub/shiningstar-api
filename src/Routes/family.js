@@ -14,26 +14,26 @@ import { authorize } from "../Middleware/auth.js";
 
 let familyRouter = Router();
 
+// Generate family ID
+familyRouter.get("/generate/id", authorize('Admin'), generateFamilyId);
+
 // CRUD operations
 familyRouter
   .route("/")
-  .post(createFamily)
-  .get(getAllFamilies);
+  .post(authorize('Admin'), createFamily)
+  .get(authorize('Admin', 'Parent'), getAllFamilies);
 
 familyRouter
   .route("/:id")
-  .get(getFamilyById)
-  .patch(updateFamily)
-  .delete(deleteFamily);
+  .get(authorize('Admin', 'Parent'), getFamilyById)
+  .patch(authorize('Admin'), updateFamily)
+  .delete(authorize('Admin'), deleteFamily);
 
 // Family fee summary
-familyRouter.get("/:id/fee-summary", getFamilyFeeSummary);
+familyRouter.get("/:id/fee-summary", authorize('Admin', 'Parent'), getFamilyFeeSummary);
 
 // Link/unlink students
 familyRouter.post("/link-student", authorize('Admin'), linkStudentToFamily);
 familyRouter.delete("/unlink-student/:studentId", authorize('Admin'), unlinkStudentFromFamily);
-
-// Generate family ID
-familyRouter.get("/generate/id", generateFamilyId);
 
 export default familyRouter;

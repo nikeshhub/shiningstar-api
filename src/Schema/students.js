@@ -111,18 +111,6 @@ let studentSchema = Schema({
     default: 'Active'
   },
 
-  // Fee Balance Summary (for quick reference)
-  feeBalance: {
-    totalDue: {
-      type: Number,
-      default: 0
-    },
-    totalAdvance: {
-      type: Number,
-      default: 0
-    }
-  },
-
   // Remarks
   remarks: {
     type: String

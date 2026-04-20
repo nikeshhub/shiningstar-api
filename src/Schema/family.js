@@ -53,13 +53,7 @@ let familySchema = Schema({
     type: Schema.Types.ObjectId,
     ref: 'User'
   },
-  // Billing preference
-  billingType: {
-    type: String,
-    enum: ['Family', 'Individual'],
-    default: 'Family'
-  },
-  // Combined fee balance for the entire family (calculated from all students)
+  // Combined fee balance for the entire family
   familyFeeBalance: {
     totalDue: {
       type: Number,
