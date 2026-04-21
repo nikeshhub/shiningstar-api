@@ -187,12 +187,7 @@ const seedClasses = async (subjectMap) => {
         })
         .map(code => ({
           subject: subjectMap[code],
-          book: {
-            bookName: '',
-            publication: '',
-            cost: 0,
-            coverPhoto: ''
-          }
+          books: []
         }));
 
       return {
