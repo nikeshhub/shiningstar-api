@@ -199,8 +199,36 @@ const swaggerDefinition = {
           classTeacher: { type: 'string', description: 'Teacher ObjectId' },
           capacity: { type: 'integer', default: 40, example: 35 },
           monthlyFee: { type: 'number', default: 0, example: 5000 },
-          subjects: { type: 'array', items: { type: 'string' }, description: 'Array of Subject ObjectIds' },
+          subjects: {
+            type: 'array',
+            description: 'Array of Subject ObjectIds or subject/book-set objects. Book details live in Inventory; class subjects only link inventory book items.',
+            items: {
+              oneOf: [
+                { type: 'string', description: 'Subject ObjectId' },
+                {
+                  type: 'object',
+                  properties: {
+                    subject: { type: 'string', description: 'Subject ObjectId' },
+                    books: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/ClassSubjectBookLink' },
+                    },
+                  },
+                },
+              ],
+            },
+          },
           status: { type: 'string', enum: ['Active', 'Inactive'], default: 'Active' },
+        },
+      },
+      ClassSubjectBookLink: {
+        type: 'object',
+        required: ['item'],
+        properties: {
+          item: { type: 'string', description: 'Inventory ObjectId for an itemType=Books item' },
+          required: { type: 'boolean', default: true },
+          quantityPerStudent: { type: 'number', default: 1 },
+          note: { type: 'string' },
         },
       },
       ClassPopulated: {
@@ -214,7 +242,27 @@ const swaggerDefinition = {
           },
           capacity: { type: 'integer' },
           monthlyFee: { type: 'number' },
-          subjects: { type: 'array', items: { type: 'object', properties: { subjectName: { type: 'string' }, subjectCode: { type: 'string' } } } },
+          subjects: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                subject: { type: 'object', properties: { subjectName: { type: 'string' }, subjectCode: { type: 'string' } } },
+                books: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      item: { type: 'object', description: 'Populated Inventory book item' },
+                      required: { type: 'boolean' },
+                      quantityPerStudent: { type: 'number' },
+                      note: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
           status: { type: 'string' },
           studentCount: { type: 'integer' },
           totalMonthlyRevenue: { type: 'number' },
@@ -431,6 +479,9 @@ const swaggerDefinition = {
           itemType: { type: 'string', enum: ['Uniform', 'Books', 'Stationery'] },
           itemName: { type: 'string', example: 'School Uniform Set' },
           description: { type: 'string' },
+          publication: { type: 'string', description: 'Book publication/publisher when itemType is Books' },
+          coverPhoto: { type: 'string', description: 'Book cover image URL when itemType is Books' },
+          subject: { type: 'string', description: 'Subject ObjectId when itemType is Books' },
           quantity: { type: 'integer', example: 50 },
           price: { type: 'number', example: 1500 },
           applicableClasses: { type: 'array', items: { type: 'string' } },

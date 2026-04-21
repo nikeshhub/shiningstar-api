@@ -27,6 +27,16 @@ let inventorySchema = Schema({
   description: {
     type: String
   },
+  publication: {
+    type: String
+  },
+  coverPhoto: {
+    type: String
+  },
+  subject: {
+    type: Schema.Types.ObjectId,
+    ref: 'Subject'
+  },
   quantity: {
     type: Number,
     required: true,

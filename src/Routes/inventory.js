@@ -59,6 +59,16 @@ let inventoryRouter = Router();
  *           enum: [Uniform, Books, Stationery]
  *         description: Filter by item type
  *       - in: query
+ *         name: classId
+ *         schema:
+ *           type: string
+ *         description: Filter items applicable to a class
+ *       - in: query
+ *         name: subjectId
+ *         schema:
+ *           type: string
+ *         description: Filter book items linked to a subject
+ *       - in: query
  *         name: status
  *         schema:
  *           type: string
