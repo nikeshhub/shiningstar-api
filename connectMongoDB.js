@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { MONGODB_URI } from "./src/config/env.js";
+import { isProduction, MONGODB_URI } from "./src/config/env.js";
 
 // Connect to MongoDB
 const connectToMongoDb = async () => {
@@ -8,6 +8,7 @@ const connectToMongoDb = async () => {
     const options = {
       serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
       socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+      autoIndex: !isProduction,
     };
 
     await mongoose.connect(MONGODB_URI, options);

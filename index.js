@@ -1,8 +1,16 @@
 import express, { json } from "express";
+import mongoose from "mongoose";
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./src/swagger/index.js";
 import connectToMongoDb from "./connectMongoDB.js";
-import { PORT } from "./src/config/env.js";
+import {
+  ALLOWED_ORIGINS,
+  ENABLE_API_DOCS,
+  JSON_BODY_LIMIT,
+  NODE_ENV,
+  PORT,
+  isProduction,
+} from "./src/config/env.js";
 import authRouter from "./src/Routes/auth.js";
 import studentRouter from "./src/Routes/students.js";
 import feeRouter from "./src/Routes/fee.js";
@@ -22,11 +30,26 @@ import { startNotificationScheduler } from "./src/services/notificationScheduler
 const app = express();
 
 // Middleware
-app.use(json());
+app.use(json({ limit: JSON_BODY_LIMIT }));
 
-// Enable CORS for frontend
+// Enable CORS for configured frontend origins.
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  const allowAnyOrigin = !isProduction && ALLOWED_ORIGINS.length === 0;
+
+  if (allowAnyOrigin) {
+    res.header("Access-Control-Allow-Origin", "*");
+  } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Credentials", "true");
+  } else if (origin && req.method === "OPTIONS") {
+    return res.status(403).json({
+      success: false,
+      message: "CORS origin is not allowed",
+    });
+  }
+
   res.header(
     "Access-Control-Allow-Headers",
     "Origin, X-Requested-With, Content-Type, Accept, Authorization",
@@ -45,13 +68,32 @@ app.use((req, res, next) => {
 });
 
 // Swagger API Documentation
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+if (ENABLE_API_DOCS) {
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+}
 
 // Public routes
 app.get("/", (req, res) => {
   res.json({
     success: true,
     message: "Shining Star School Management System API is running",
+  });
+});
+
+app.get("/health", (req, res) => {
+  const mongoState = mongoose.connection.readyState;
+  const databaseConnected = mongoState === 1;
+
+  res.status(databaseConnected ? 200 : 503).json({
+    success: databaseConnected,
+    status: databaseConnected ? "ok" : "degraded",
+    environment: NODE_ENV,
+    uptime: process.uptime(),
+    database: {
+      connected: databaseConnected,
+      state: mongoState,
+      name: mongoose.connection.name || null,
+    },
   });
 });
 
@@ -80,7 +122,9 @@ const startServer = async () => {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`API available at http://localhost:${PORT}`);
-    console.log(`\nSwagger Docs: http://localhost:${PORT}/api-docs`);
+    if (ENABLE_API_DOCS) {
+      console.log(`\nSwagger Docs: http://localhost:${PORT}/api-docs`);
+    }
     console.log("Authentication enabled on all routes except /api/auth");
     console.log("Login endpoint: POST /api/auth/login");
     console.log("Register endpoint: POST /api/auth/register");
