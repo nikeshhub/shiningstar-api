@@ -31,11 +31,20 @@ const app = express();
 
 // Middleware
 app.use(json({ limit: JSON_BODY_LIMIT }));
+console.log(":::::::ALLOWED ORIGINS:::::::", ALLOWED_ORIGINS);
 
 // Enable CORS for configured frontend origins.
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   const allowAnyOrigin = !isProduction && ALLOWED_ORIGINS.length === 0;
+
+  // Log origin in production to help debug CORS issues
+  if (isProduction && origin) {
+    console.log(`[CORS] Request from origin: ${origin}`);
+  }
+
+  // Check if origin is allowed
+  const isOriginAllowed = allowAnyOrigin || (origin && ALLOWED_ORIGINS.includes(origin));
 
   if (allowAnyOrigin) {
     res.header("Access-Control-Allow-Origin", "*");
@@ -43,25 +52,37 @@ app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", origin);
     res.header("Vary", "Origin");
     res.header("Access-Control-Allow-Credentials", "true");
-  } else if (origin && req.method === "OPTIONS") {
-    return res.status(403).json({
-      success: false,
-      message: "CORS origin is not allowed",
-    });
+  } else if (origin) {
+    // Origin is not allowed
+    console.warn(`[CORS] Blocked request from disallowed origin: ${origin}`);
+    console.warn(`[CORS] Allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+
+    if (req.method === "OPTIONS") {
+      // Reject preflight request
+      return res.status(403).json({
+        success: false,
+        message: "CORS origin is not allowed",
+      });
+    }
+    // For non-OPTIONS requests, don't set CORS headers
+    // The browser will block the response
   }
 
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-  );
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  );
+  // Set CORS headers for allowed origins
+  if (isOriginAllowed) {
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+    );
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    );
 
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
+    // Handle preflight requests
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
   }
 
   next();
