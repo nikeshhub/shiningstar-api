@@ -1,11 +1,38 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
+import dotenv from 'dotenv';
 import { User, Subject, Class } from './src/Model/model.js';
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/shining_star';
+dotenv.config();
+
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/shining_star';
+
+const getRequiredEnv = (name) => {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+};
+
+const seedUserConfigs = [
+  {
+    label: 'SuperAdmin',
+    role: 'SuperAdmin',
+    phoneNumber: getRequiredEnv('SEED_SUPERADMIN_PHONE'),
+    email: getRequiredEnv('SEED_SUPERADMIN_EMAIL'),
+    password: getRequiredEnv('SEED_SUPERADMIN_PASSWORD'),
+  },
+  {
+    label: 'Admin',
+    role: 'Admin',
+    phoneNumber: getRequiredEnv('SEED_ADMIN_PHONE'),
+    email: getRequiredEnv('SEED_ADMIN_EMAIL'),
+    password: getRequiredEnv('SEED_ADMIN_PASSWORD'),
+  },
+];
 
 // Nepal curriculum subjects with credit hours and marks distribution
 // Major subjects: 50 written + 50 practical = 100 total
@@ -75,30 +102,38 @@ const classSubjects = {
 
 const seedUsers = async () => {
   try {
-    const existingAdmin = await User.findOne({ phoneNumber: '9999999999' });
-    if (existingAdmin) {
-      console.log('  Admin user already exists — skipping.');
-      return;
+    for (const userConfig of seedUserConfigs) {
+      const existingUser = await User.findOne({
+        $or: [
+          { phoneNumber: userConfig.phoneNumber },
+          { email: userConfig.email },
+        ],
+      });
+
+      if (existingUser) {
+        console.log(`  ${userConfig.label} already exists — skipping.`);
+        continue;
+      }
+
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(userConfig.password, salt);
+
+      await User.create({
+        phoneNumber: userConfig.phoneNumber,
+        email: userConfig.email,
+        password: hashedPassword,
+        role: userConfig.role,
+        isActive: true,
+        permissions: [],
+      });
+
+      console.log(`  ${userConfig.label} created.`);
+      console.log(`    Phone:    ${userConfig.phoneNumber}`);
+      console.log(`    Email:    ${userConfig.email}`);
+      console.log('    Password: loaded from env');
     }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash('admin123', salt);
-
-    await User.create({
-      phoneNumber: '9999999999',
-      email: 'admin@shiningstar.com',
-      password: hashedPassword,
-      role: 'Admin',
-      isActive: true,
-      permissions: [],
-    });
-
-    console.log('  Admin user created.');
-    console.log('    Phone:    9999999999');
-    console.log('    Email:    admin@shiningstar.com');
-    console.log('    Password: admin123');
   } catch (error) {
-    console.error('  Failed to seed admin user:', error);
+    console.error('  Failed to seed default users:', error);
     throw error;
   }
 };
