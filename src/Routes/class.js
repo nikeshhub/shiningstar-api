@@ -299,7 +299,49 @@ classRouter.route("/:id/timetable")
   .get(authorize('Admin', 'Teacher', 'Parent'), getTimetable)
   .put(authorize('Admin'), setTimetable);
 
-// Update book details for a subject in a class
+/**
+ * @swagger
+ * /api/classes/{classId}/subjects/{subjectId}/books:
+ *   put:
+ *     tags: [Classes]
+ *     summary: Set inventory-backed book set for a class subject
+ *     description: Links existing Inventory items with itemType=Books to a subject in a class. Book details, price, and stock remain in Inventory.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: classId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: subjectId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               books:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/ClassSubjectBookLink'
+ *     responses:
+ *       200:
+ *         description: Subject book set updated successfully
+ *       400:
+ *         $ref: '#/components/responses/ValidationError'
+ *       401:
+ *         $ref: '#/components/responses/Unauthorized'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ */
+classRouter.route("/:classId/subjects/:subjectId/books")
+  .put(authorize('Admin'), updateClassSubjectBook);
+
+// Backward-compatible singular path
 classRouter.route("/:classId/subjects/:subjectId/book")
   .put(authorize('Admin'), updateClassSubjectBook);
 

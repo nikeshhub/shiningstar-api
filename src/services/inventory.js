@@ -96,11 +96,13 @@ export let createInventoryItem = async (req, res) => {
 
 export let getAllInventoryItems = async (req, res) => {
   try {
-    const { itemType, status, search } = req.query;
+    const { itemType, status, search, classId, subjectId } = req.query;
     let query = {};
 
     if (itemType) query.itemType = itemType;
     if (status) query.status = status;
+    if (classId) query.applicableClasses = classId;
+    if (subjectId) query.subject = subjectId;
     if (search) {
       query.$or = [
         { itemName: { $regex: search, $options: 'i' } },
@@ -110,6 +112,7 @@ export let getAllInventoryItems = async (req, res) => {
 
     const result = await Inventory.find(query)
       .populate('applicableClasses')
+      .populate('subject', 'subjectName subjectCode')
       .sort({ itemName: 1 });
 
     res.status(200).json({
@@ -125,7 +128,8 @@ export let getAllInventoryItems = async (req, res) => {
 export let getInventoryItemById = async (req, res) => {
   try {
     const result = await Inventory.findById(req.params.id)
-      .populate('applicableClasses');
+      .populate('applicableClasses')
+      .populate('subject', 'subjectName subjectCode');
 
     if (!result) {
       return res.status(404).json({
@@ -169,7 +173,8 @@ export let updateInventoryItem = async (req, res) => {
       req.params.id,
       normalizeInventoryPayload(mergedPayload),
       { new: true, runValidators: true }
-    ).populate('applicableClasses');
+    ).populate('applicableClasses')
+      .populate('subject', 'subjectName subjectCode');
 
     res.status(200).json({
       success: true,

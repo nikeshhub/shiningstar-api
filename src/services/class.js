@@ -1,4 +1,4 @@
-import { Class, Student, Subject } from "../Model/model.js";
+import { Class, Inventory, Student } from "../Model/model.js";
 import { handleError } from "../utils/errorHandler.js";
 import { withFamilyContactList } from "../utils/studentFamily.js";
 import mongoose from "mongoose";
@@ -7,7 +7,90 @@ import {
   canTeacherAccessClassId,
   getParentScope,
   getTeacherScope,
+  normalizeObjectId,
 } from "../utils/accessScope.js";
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+const normalizeBookLinks = (value) => {
+  const rawBooks = Array.isArray(value) ? value : [];
+  const seen = new Set();
+
+  return rawBooks
+    .map((book) => {
+      const item = normalizeObjectId(
+        book?.item
+        || book?.itemId
+        || book?.inventoryItem
+        || book?.inventoryItemId
+        || book?.bookItem
+      );
+
+      if (!item || !isValidObjectId(item) || seen.has(item)) {
+        return null;
+      }
+
+      seen.add(item);
+
+      const quantityPerStudent = Number(book?.quantityPerStudent ?? book?.quantity ?? 1);
+
+      return {
+        item,
+        required: book?.required !== false,
+        quantityPerStudent: Number.isFinite(quantityPerStudent) && quantityPerStudent > 0
+          ? quantityPerStudent
+          : 1,
+        note: book?.note || "",
+      };
+    })
+    .filter(Boolean);
+};
+
+const normalizeClassSubjects = (subjects = []) =>
+  subjects
+    .map((entry) => {
+      const subject = normalizeObjectId(
+        typeof entry === "object" && entry !== null ? entry.subject : entry
+      );
+
+      if (!subject || !isValidObjectId(subject)) {
+        return null;
+      }
+
+      const bookSource = typeof entry === "object" && entry !== null
+        ? entry.books || entry.bookItems || (entry.bookItem ? [entry.bookItem] : [])
+        : [];
+
+      return {
+        subject,
+        books: normalizeBookLinks(bookSource),
+      };
+    })
+    .filter(Boolean);
+
+const populateClassBooks = (query) =>
+  query.populate(
+    'subjects.books.item',
+    'itemName itemCode itemType category publication price unitPrice quantity unit minimumQuantity status coverPhoto subject applicableClasses'
+  );
+
+const buildBookSetPayload = (body = {}) => {
+  if (Array.isArray(body.books)) {
+    return body.books;
+  }
+
+  const item = body.item || body.itemId || body.inventoryItem || body.inventoryItemId || body.bookItem;
+  if (!item) {
+    return null;
+  }
+
+  return [{
+    item,
+    required: body.required,
+    quantityPerStudent: body.quantityPerStudent ?? body.quantity,
+    note: body.note,
+  }];
+};
 
 // Create class
 export let createClass = async (req, res) => {
@@ -22,33 +105,8 @@ export let createClass = async (req, res) => {
       delete data.classTeacher; // Remove invalid classTeacher ID
     }
 
-    // Transform subjects array if needed
-    // If subjects is an array of strings (IDs), convert to proper embedded document structure
     if (data.subjects && Array.isArray(data.subjects)) {
-      data.subjects = data.subjects
-        .filter(subjectId => {
-          // Filter out invalid entries
-          if (typeof subjectId === 'object' && subjectId.subject) {
-            return mongoose.Types.ObjectId.isValid(subjectId.subject);
-          }
-          return mongoose.Types.ObjectId.isValid(subjectId);
-        })
-        .map(subjectId => {
-          // If it's already an object with 'subject' property, keep it
-          if (typeof subjectId === 'object' && subjectId.subject) {
-            return subjectId;
-          }
-          // Otherwise, convert string ID to proper structure
-          return {
-            subject: subjectId,
-            book: {
-              bookName: '',
-              publication: '',
-              cost: 0,
-              coverPhoto: ''
-            }
-          };
-        });
+      data.subjects = normalizeClassSubjects(data.subjects);
     }
 
     const result = await Class.create(data);
@@ -80,7 +138,7 @@ export let getAllClasses = async (req, res) => {
       query._id = { $in: scope.classIds };
     }
 
-    const result = await Class.find(query)
+    const result = await populateClassBooks(Class.find(query))
       .populate('classTeacher', 'name email phone')
       .populate('subjects.subject', 'subjectName subjectCode subjectType creditHours')
       .populate('timetable.subject', 'subjectName subjectCode')
@@ -128,7 +186,7 @@ export let getClassById = async (req, res) => {
       }
     }
 
-    const result = await Class.findById(req.params.id)
+    const result = await populateClassBooks(Class.findById(req.params.id))
       .populate('classTeacher', 'name email phone qualification gender status')
       .populate('subjects.subject', 'subjectName subjectCode subjectType creditHours writtenMarks practicalMarks fullMarks passMarks')
       .populate('timetable.subject', 'subjectName subjectCode')
@@ -190,40 +248,15 @@ export let updateClass = async (req, res) => {
       delete data.classTeacher; // Remove invalid classTeacher ID
     }
 
-    // Transform subjects array if needed
-    // If subjects is an array of strings (IDs), convert to proper embedded document structure
     if (data.subjects && Array.isArray(data.subjects)) {
-      data.subjects = data.subjects
-        .filter(subjectId => {
-          // Filter out invalid entries
-          if (typeof subjectId === 'object' && subjectId.subject) {
-            return mongoose.Types.ObjectId.isValid(subjectId.subject);
-          }
-          return mongoose.Types.ObjectId.isValid(subjectId);
-        })
-        .map(subjectId => {
-          // If it's already an object with 'subject' property, keep it
-          if (typeof subjectId === 'object' && subjectId.subject) {
-            return subjectId;
-          }
-          // Otherwise, convert string ID to proper structure
-          return {
-            subject: subjectId,
-            book: {
-              bookName: '',
-              publication: '',
-              cost: 0,
-              coverPhoto: ''
-            }
-          };
-        });
+      data.subjects = normalizeClassSubjects(data.subjects);
     }
 
-    const result = await Class.findByIdAndUpdate(
+    const result = await populateClassBooks(Class.findByIdAndUpdate(
       req.params.id,
       data,
       { new: true, runValidators: true }
-    ).populate('classTeacher', 'name email phone')
+    )).populate('classTeacher', 'name email phone')
       .populate('subjects.subject', 'subjectName subjectCode subjectType creditHours')
       .populate('timetable.subject', 'subjectName subjectCode')
       .populate('timetable.teacher', 'name');
@@ -404,11 +437,19 @@ export let setTimetable = async (req, res) => {
   }
 };
 
-// Update class subject book details
+// Set inventory-backed book set for a subject in a class.
+// Inventory owns book name/price/publication/stock. Class subjects only store
+// references plus set-specific metadata.
 export let updateClassSubjectBook = async (req, res) => {
   try {
     const { classId, subjectId } = req.params;
-    const { bookName, publication, cost, coverPhoto } = req.body;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(subjectId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Class ID or subject ID is invalid",
+      });
+    }
 
     const classDoc = await Class.findById(classId);
     if (!classDoc) {
@@ -418,7 +459,6 @@ export let updateClassSubjectBook = async (req, res) => {
       });
     }
 
-    // Find and update the specific subject's book information
     const subjectIndex = classDoc.subjects.findIndex(
       s => s.subject.toString() === subjectId
     );
@@ -430,21 +470,74 @@ export let updateClassSubjectBook = async (req, res) => {
       });
     }
 
-    classDoc.subjects[subjectIndex].book = {
-      bookName: bookName || '',
-      publication: publication || '',
-      cost: cost || 0,
-      coverPhoto: coverPhoto || ''
-    };
+    const requestedBooks = buildBookSetPayload(req.body);
+    if (!requestedBooks) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide books array or an inventory item ID",
+      });
+    }
+
+    const books = normalizeBookLinks(requestedBooks);
+    if (books.length !== requestedBooks.length) {
+      return res.status(400).json({
+        success: false,
+        message: "One or more book inventory item IDs are invalid or duplicated",
+      });
+    }
+
+    const bookIds = books.map((book) => book.item);
+    const inventoryBooks = bookIds.length
+      ? await Inventory.find({ _id: { $in: bookIds } })
+      : [];
+
+    if (inventoryBooks.length !== bookIds.length) {
+      return res.status(404).json({
+        success: false,
+        message: "One or more inventory books were not found",
+      });
+    }
+
+    const normalizedClassId = normalizeObjectId(classDoc._id);
+    for (const item of inventoryBooks) {
+      const itemType = item.itemType || item.category;
+      if (itemType !== "Books") {
+        return res.status(400).json({
+          success: false,
+          message: `${item.itemName} is not a Books inventory item`,
+        });
+      }
+
+      const existingSubjectId = normalizeObjectId(item.subject);
+      if (existingSubjectId && existingSubjectId !== subjectId) {
+        return res.status(400).json({
+          success: false,
+          message: `${item.itemName} is already linked to another subject`,
+        });
+      }
+
+      item.subject = subjectId;
+
+      const classIds = new Set(
+        (item.applicableClasses || []).map((classRef) => normalizeObjectId(classRef)).filter(Boolean)
+      );
+      if (!classIds.has(normalizedClassId)) {
+        item.applicableClasses = [...(item.applicableClasses || []), classDoc._id];
+      }
+
+      await item.save();
+    }
+
+    classDoc.subjects[subjectIndex].books = books;
 
     await classDoc.save();
 
-    const updated = await Class.findById(classId)
+    const updated = await populateClassBooks(Class.findById(classId))
       .populate('subjects.subject', 'subjectName subjectCode');
 
     res.status(200).json({
       success: true,
-      message: "Subject book details updated successfully",
+      message: "Subject book set updated successfully",
       data: updated.subjects
     });
   } catch (error) {

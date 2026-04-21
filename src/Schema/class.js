@@ -25,12 +25,23 @@ let classSchema = Schema({
       ref: 'Subject',
       required: true
     },
-    book: {
-      bookName: String,
-      publication: String,
-      cost: Number,
-      coverPhoto: String // URL to uploaded image
-    }
+    books: [{
+      item: {
+        type: Schema.Types.ObjectId,
+        ref: 'Inventory',
+        required: true
+      },
+      required: {
+        type: Boolean,
+        default: true
+      },
+      quantityPerStudent: {
+        type: Number,
+        default: 1,
+        min: 1
+      },
+      note: String
+    }]
   }],
   status: {
     type: String,
