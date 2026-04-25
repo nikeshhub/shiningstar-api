@@ -34,6 +34,19 @@ export let createFamily = async (req, res) => {
   try {
     const data = req.body;
 
+    // Check for duplicate primary contact mobile
+    if (data.primaryContact?.mobile) {
+      const existingFamily = await Family.findOne({
+        'primaryContact.mobile': data.primaryContact.mobile,
+      });
+      if (existingFamily) {
+        return res.status(409).json({
+          success: false,
+          message: `A family with mobile ${data.primaryContact.mobile} already exists (${existingFamily.familyId} - ${existingFamily.primaryContact.name})`,
+        });
+      }
+    }
+
     // Auto-generate familyId if not provided
     if (!data.familyId) {
       const lastFamily = await Family.findOne().sort({ createdAt: -1 });
