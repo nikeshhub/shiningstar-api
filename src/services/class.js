@@ -249,7 +249,18 @@ export let updateClass = async (req, res) => {
     }
 
     if (data.subjects && Array.isArray(data.subjects)) {
-      data.subjects = normalizeClassSubjects(data.subjects);
+      const existingClass = await Class.findById(req.params.id).select('subjects');
+      const existingBooksMap = {};
+      if (existingClass) {
+        existingClass.subjects.forEach(s => {
+          existingBooksMap[s.subject.toString()] = s.books;
+        });
+      }
+      const normalizedSubjects = normalizeClassSubjects(data.subjects);
+      data.subjects = normalizedSubjects.map(s => ({
+        ...s,
+        books: existingBooksMap[s.subject.toString()] || [],
+      }));
     }
 
     const result = await populateClassBooks(Class.findByIdAndUpdate(
